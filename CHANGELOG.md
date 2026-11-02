@@ -21,6 +21,9 @@ docker compose start sync
   marked where a missing line had to be estimated. 10 Hz on Rivian drives copied off the device, 2 Hz otherwise.
 - **Rack ignoring torque** error (Rivian, drives copied off the device): the steering rack silently not applying
   openpilot's torque.
+- **Rlogs waiting** tile under Sync status (with direct device copy): how much time spent driving still needs to be
+  copied off the device. Orange at 8 hours and red at 11, since the device deletes its oldest logs once it fills up.
+  Logs already deleted from the device may show as waiting until the first complete copy.
 
 ### Changed
 

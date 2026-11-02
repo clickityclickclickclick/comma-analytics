@@ -50,8 +50,8 @@ def finished_segments() -> list[str]:
   return _ssh(f'cd {REALDATA} && for d in *--*--*; do ls "$d"/*.lock >/dev/null 2>&1 || echo "$d"; done').split()
 
 
-def pull(log, route: str | None = None) -> int:
-  """Copy finished segments' logs (only `route`'s, if given). Returns the number of files transferred."""
+def pull(log, route: str | None = None) -> bool:
+  """Copy finished segments' logs (only `route`'s, if given). True if the copy ran to the end."""
   segs = finished_segments()
   if route:
     segs = [s for s in segs if s.startswith(route)]
@@ -70,10 +70,12 @@ def pull(log, route: str | None = None) -> int:
     total += len(copied)
     if p.returncode != 0:
       log(f"device: rsync {name} stopped ({p.returncode}): {p.stderr.strip()[-200:]}")
-      break  # probably powered off; resume next time
+      if total:
+        log(f"device: copied {total} files")
+      return False  # probably powered off; resume next time
   if total:
     log(f"device: copied {total} files")
-  return total
+  return True
 
 
 def device_routes() -> dict[str, list[int]]:
@@ -83,6 +85,19 @@ def device_routes() -> dict[str, list[int]]:
       route, seg = d.name.rsplit("--", 1)
       routes[route].append(int(seg))
   return {r: sorted(s) for r, s in sorted(routes.items())}
+
+
+def rlogs_waiting(since_ms: int) -> int:
+  """Segments (a minute of driving each) from `since_ms` on known from their qlogs, with no rlog copied yet."""
+  have = {d.name for d in DEVICE.glob("*--*--*") if (d / "rlog.zst").exists()}
+  n = 0
+  for meta in ARCHIVE.glob("*/route.json"):
+    r = json.loads(meta.read_text())
+    route = r["fullname"].split("|")[1]
+    for q in meta.parent.glob("*.qlog.zst"):
+      seg = int(q.name.split(".")[0])
+      n += r["start_time_utc_millis"] + seg * 60_000 >= since_ms and f"{route}--{seg}" not in have
+  return n
 
 
 def _scan(path):

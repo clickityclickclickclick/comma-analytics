@@ -270,8 +270,13 @@ def device_pull(write, state, changes, verbose: bool = False, route: str | None 
     if verbose:
       log(f"device: {ENV.get('DEVICE_IP') or 'DEVICE_IP not set'} not reachable")
     return
+  started = int(time.time() * 1000)
   try:
-    device.pull(log, route)
+    if device.pull(log, route) and not route:
+      # everything still on the device is here now, so an older rlog still missing is gone, not waiting. Two minutes'
+      # margin for the segment being recorded as the copy started: it counts as waiting until the next copy
+      state["rlog_copied_until"] = started - 120_000
+      save_state(state)
   except Exception as e:  # powered off mid-copy etc.; resume next time
     log(f"device: pull failed: {e}")
   try:
@@ -284,6 +289,14 @@ def device_pull(write, state, changes, verbose: bool = False, route: str | None 
     log(f"device: braking + fault data from {n} rlog segments")
   p = Point("sync_status").time(dt.datetime.now(dt.UTC), WritePrecision.S).field("device_seen", 1)
   write.write(ENV["INFLUX_BUCKET"], ENV["INFLUX_ORG"], p)
+
+
+def write_rlogs_waiting(write, state) -> None:
+  """Minutes of driving whose rlogs are still only on the device, which deletes its oldest logs when it fills up."""
+  if ENV.get("DEVICE_IP"):
+    p = (Point("sync_status").time(dt.datetime.now(dt.UTC), WritePrecision.S)
+         .field("rlogs_waiting", device.rlogs_waiting(state.get("rlog_copied_until", 0))))
+    write.write(ENV["INFLUX_BUCKET"], ENV["INFLUX_ORG"], p)
 
 
 def cloud_pull(write, state, changes, days: float) -> int:
@@ -376,6 +389,7 @@ def main() -> int:
             ok = github_check(write) and ok
             next_cloud = time.time() + (cloud_every if ok else retry_every)
           device_pull(write, state, changes)
+          write_rlogs_waiting(write, state)
           setup_grafana.follow_latest_drive()
           if ingest_rlogs(write, state, changes):
             continue  # backlog left: go again without sleeping

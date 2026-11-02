@@ -1397,7 +1397,7 @@ def build_dashboard() -> dict:
           fieldConfig={"defaults": {"color": {"mode": "fixed", "fixedColor": "text"}}, "overrides": []},
           options={**stat_opts, "colorMode": "none", "textMode": "value", "orientation": "horizontal", "text": {"valueSize": 18},
                    "reduceOptions": {"calcs": ["lastNotNull"], "fields": "/.*/", "values": False}}),
-    panel(17, "Driving models (latest drive)", "stat", 14, 4, 7, 3,
+    panel(17, "Driving models (latest drive)", "stat", 14, 4, 6, 3,
           [target(f'from(bucket: "{BUCKET}")\n  |> range(start: -365d)\n'
                   '  |> filter(fn: (r) => r._measurement == "route" and (r._field == "model_big" or r._field == "model_small"))\n'
                   '  |> group(columns: ["_field"])\n  |> last()\n'
@@ -1411,6 +1411,24 @@ def build_dashboard() -> dict:
           options={**stat_opts, "colorMode": "none", "textMode": "value_and_name", "orientation": "horizontal",
                    "text": {"titleSize": 12, "valueSize": 16},
                    "reduceOptions": {"calcs": ["lastNotNull"], "fields": "/.*/", "values": False}}),
+    panel(41, "Rlogs waiting", "stat", 20, 4, 4, 3,
+          [target(f'from(bucket: "{BUCKET}")\n  |> range(start: -30d)\n'
+                  '  |> filter(fn: (r) => r._measurement == "sync_status" and r._field == "rlogs_waiting")\n  |> last()\n'
+                  '  |> keep(columns: ["_value"])')],
+          description="How much time spent driving still needs to be copied off the comma as full logs (rlogs). \"1 hour\" means an hour "
+                      "of driving, not how long the copy takes (about 5 minutes).\n\n"
+                      "Copying happens by itself when the comma is on your home Wi-Fi, usually as the car starts. To catch "
+                      "up, power the car on at home.\n\n"
+                      "The comma holds roughly 12 hours of driving, then deletes its oldest logs to make room, so this "
+                      "turns orange at 8 hours and red at 11.\n\n"
+                      "Drives the cloud hasn't received yet aren't counted.",
+          fieldConfig={"defaults": {"unit": "m", "decimals": 0, "noValue": "no device copy",
+                                    "mappings": [{"type": "value", "options": {"0": {"text": "All copied"}}}],
+                                    "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": None},
+                                                                                 {"color": "orange", "value": 480},
+                                                                                 {"color": "red", "value": 660}]}},
+                       "overrides": []},
+          options=stat_opts),
     # no content, only CSS for the bar of controls at the top (Grafana has no options for its order or colours). Above
     # the first row, in a headerless one of its own that the CSS hides: in a row, collapsing it would remove the CSS,
     # and further down Grafana would only draw it once scrolled to. Needs GF_PANELS_DISABLE_SANITIZE_HTML=true.

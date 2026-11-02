@@ -53,7 +53,8 @@ Home Assistant names them: see *driver names* under Setup):
   this and the collision close-ups hide themselves on drives without data.
 
 **Sync status:** token expiry, last sync, the software the newest drive ran (named by fork: openpilot, sunnypilot,
-Adventure Pilot, ...) and its driving models, and how far behind its GitHub branch it was.
+Adventure Pilot, ...) and its driving models, how far behind its GitHub branch it was, and with direct device copy, how much driving is still waiting to be
+copied as full logs (it turns orange at 8 hours and red at 11, as the device fills up and starts deleting its oldest).
 
 The toggles under the dropdowns shade the graphs by mode (Full / MADS / Manual) and mark distance, collision alerts,
 errors and events.
