@@ -42,7 +42,7 @@ DAY_LABEL = ('days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]\n'
              'pad = (n) => if n < 10 then "0" + string(v: n) else string(v: n)\n'
              'dayLabel = (t) => days[date.weekDay(t: t)] + " " + pad(n: date.month(t: t)) + "/" + pad(n: date.monthDay(t: t))\n')
 # fault code -> colour (worst first); labels come from ct.faults
-FAULT_COLOURS = {5: "#C4162A", 4: "#E02F44", 3: "#FF7F00", 2: "#FFB357", 1: "#A16D6D", 7: "#D683CE", 6: "#C0A16B"}
+FAULT_COLOURS = {5: "#C4162A", 8: "#A50E2D", 4: "#E02F44", 3: "#FF7F00", 2: "#FFB357", 1: "#A16D6D", 7: "#D683CE", 6: "#C0A16B"}
 # the timeline row plots severity rank (1 = least), not the stored code
 FAULT_RANK = ("rank = (c) => " + " ".join(f"if c == {code} then {i} else" for i, code in enumerate(SEVERITY, 1)) + " 0\n")
 # Flux dict: fault name -> readable label
@@ -65,7 +65,8 @@ ODOMETER_PIPE = (f'from(bucket: "{BUCKET}")\n'
                  '  |> elapsed(unit: 1ms)\n'
                  f'  |> map(fn: (r) => ({{_time: r._time, d: r._value * {MI_TO_DIST} * float(v: if r.elapsed > 1000 then 1000 else r.elapsed) / 3600000.0}}))\n'
                  '  |> cumulativeSum(columns: ["d"])\n')
-ODOMETER = 'import "date"\n' + ODOMETER_PIPE
+# the day before the range only feeds the running total: drop it, or a zoomed-in view returns tens of thousands of rows
+ODOMETER = 'import "date"\n' + ODOMETER_PIPE + '  |> filter(fn: (r) => r._time >= v.timeRangeStart)\n'
 # distance as a tooltip-only series on the drive graphs (not drawn, no axis, so the time axes still line up)
 DISTANCE_TOOLTIP = {"matcher": {"id": "byName", "options": "distance"},
                     "properties": [{"id": "custom.hideFrom", "value": {"viz": True, "legend": True, "tooltip": False}},
@@ -257,7 +258,8 @@ DESCRIPTIONS = {
      "- **Regen**: needs the device copy (rlogs)\n"
      "- **Lane Conf.**: how sure the driving model was that it saw the lane lines",
   21: "Errors found in the drives, newest first. Click a route to see that moment, ±1 minute.\n\n"
-      "- EPS ignoring steering (ToiFlt) and EPS faults (device-copied drives)\n"
+      "- EPS ignoring steering (ToiFlt), the rack silently ignoring openpilot's torque, and EPS faults "
+      "(device-copied drives)\n"
       "- the panda blocking openpilot's steering commands\n"
       "- openpilot steering faults\n"
       "- CAN errors\n"
@@ -286,8 +288,10 @@ DESCRIPTIONS = {
      "Background shading is the mode; red bands are errors. Hover for the distance into the drive.",
   8: "Torque on the steering:\n\n"
      "- what the driver applied\n"
-     "- what the steering motor (EPS) reports\n"
-     "- what openpilot asked for (-1..1 of its limit)\n\n"
+     "- what openpilot asked for (-1..1 of its limit)\n"
+     "- whether the steering rack was applying openpilot's torque (1) or not (0): Rivian, device-copied drives only. "
+     "At 0 while openpilot is steering in torque mode, the rack is ignoring it\n"
+     "- what the steering motor (EPS) reports, on cars that report it\n\n"
      "Driver and EPS torque are in the car's own units. Red bands are errors. Hover for the distance into the drive.",
   9: "Every openpilot event on the selected drive: how many times it started and when it first did.\n\n"
      "Includes routine ones (overrides, lane changes, speed too low for steering) as well as alerts.",
@@ -895,7 +899,8 @@ def build_dashboard() -> dict:
                   'union(tables: [peak, state, state |> timeShift(duration: v.windowPeriod)])\n'
                   '  |> filter(fn: (r) => r._time >= v.timeRangeStart and r._time <= v.timeRangeStop)\n'
                   '  |> group(columns: ["_time"])\n  |> max()\n  |> group()\n  |> sort(columns: ["_time"])\n'
-                  '  |> map(fn: (r) => ({_time: r._time, _value: r._value, _field: "errors"}))', "D"),
+                  # _field back in the group key, or Grafana gets a plain table instead of a series named "errors"
+                  '  |> map(fn: (r) => ({_time: r._time, _value: r._value, _field: "errors"}))\n  |> group(columns: ["_field"])', "D"),
            # which driving model ran, named from the route's model params
            target('names = ' + src("route", ' and r.route == "${route}" and (r._field == "model_small" or r._field == "model_big")')
                   .replace("start: v.timeRangeStart, stop: v.timeRangeStop", "start: -10y").lstrip() +
@@ -1026,20 +1031,34 @@ def build_dashboard() -> dict:
                                       "properties": [{"id": "unit", "value": "degree"}, {"id": "displayName", "value": "steering angle"},
                                                      {"id": "custom.axisPlacement", "value": "left"}]}]},
           options={"tooltip": {"mode": "multi"}, "legend": {"displayMode": "list", "placement": "bottom"}}),
-    panel(8, "Steering torque (driver / EPS / openpilot request)", "timeseries", 0, 77, 18, 7,
-          [target(src("drive", ' and r.route == "${route}" and (r._field == "driver_torque" or r._field == "eps_torque"'
-                                ' or r._field == "op_torque")') + DOWNSAMPLE),
+    panel(8, "Steering torque (driver / openpilot request / rack)", "timeseries", 0, 77, 18, 7,
+          [target(src("drive", ' and r.route == "${route}" and (r._field == "driver_torque" or r._field == "op_torque")') + DOWNSAMPLE),
+           # the EPS's own torque only where the car reports one (the Rivian port leaves it at 0)
+           target('eps = ' + src("drive", ' and r.route == "${route}" and r._field == "eps_torque"').lstrip() +
+                  'reported = eps |> filter(fn: (r) => r._value != 0.0) |> count() |> findRecord(fn: (key) => true, idx: 0)\n'
+                  'eps\n  |> filter(fn: (r) => exists reported._value)\n' + DOWNSAMPLE, "C"),
+           # the rack applying openpilot's torque (EPAS_SystemStatus H_CAN_EPSS_ToiActive), from the rlogs' CAN
+           target(src("braking", ' and r.route == "${route}" and r._field == "rack_toi"') +
+                  '  |> aggregateWindow(every: v.windowPeriod, fn: last, createEmpty: false)\n'
+                  '  |> keep(columns: ["_time", "_value", "_field"])', "D"),
            target(ODOMETER + '  |> aggregateWindow(every: v.windowPeriod, fn: last, column: "d", createEmpty: false)\n'
                   '  |> map(fn: (r) => ({_time: r._time, _value: r.d, _field: "distance"}))\n  |> group(columns: ["_field"])', "B")], maxDataPoints=2000,
           fieldConfig={"defaults": {"custom": {"lineWidth": 1, "fillOpacity": 0, "showPoints": "never", "axisWidth": AXIS_WIDTH // 2}},
                        "overrides": [{"matcher": {"id": "byName", "options": "op_torque"},
                                       "properties": [{"id": "custom.axisPlacement", "value": "left"},
-                                                     {"id": "displayName", "value": "openpilot torque request (-1..1)"}]},
+                                                     {"id": "displayName", "value": "openpilot torque request (-1..1)"},
+                                                     {"id": "color", "value": {"mode": "fixed", "fixedColor": "#5794F2"}}]},
                                      # in the car's own units (carState steeringTorque / steeringTorqueEps)
                                      {"matcher": {"id": "byName", "options": "driver_torque"},
-                                      "properties": [{"id": "displayName", "value": "driver torque"}]},
+                                      "properties": [{"id": "displayName", "value": "driver torque"},
+                                                     {"id": "color", "value": {"mode": "fixed", "fixedColor": "#73BF69"}}]},
                                      {"matcher": {"id": "byName", "options": "eps_torque"},
                                       "properties": [{"id": "displayName", "value": "EPS torque"}]},
+                                     {"matcher": {"id": "byName", "options": "rack_toi"},
+                                      "properties": [{"id": "displayName", "value": "rack applying openpilot torque (1 = yes)"},
+                                                     {"id": "custom.axisPlacement", "value": "left"},
+                                                     {"id": "custom.lineInterpolation", "value": "stepAfter"},
+                                                     {"id": "color", "value": {"mode": "fixed", "fixedColor": "#FADE2A"}}]},
                                      DISTANCE_TOOLTIP]},
           options={"tooltip": {"mode": "multi"}, "legend": {"displayMode": "list", "placement": "bottom"}}),
     panel(20, "Braking — regen vs friction (CAN, device-copied drives only)", "timeseries", 0, 132, 24, 9,
@@ -1071,7 +1090,7 @@ def build_dashboard() -> dict:
                                                           ("brake_pedal_mm", "brake pedal travel", "lengthmm", "#E03ED8"))]]},
           options={"tooltip": {"mode": "multi"}, "legend": {"displayMode": "list", "placement": "bottom"}}),
     # how well the cameras could see: lane confidence, vision-motion uncertainty, road-camera exposure
-    panel(25, "Visibility (lane confidence · vision uncertainty · camera exposure)", "timeseries", 0, 84, 18, 6,
+    panel(25, "Visibility (lane confidence · vision uncertainty · camera exposure)", "timeseries", 0, 91, 18, 6,
           [target(src("vision", ' and r.route == "${route}" and (r._field == "lane_left" or r._field == "lane_right"'
                                 ' or r._field == "motion_std" or r._field == "exposure_pct")') +
                   # the 2 Hz values flicker; a 10 s trailing average reads better and keeps dips that last
@@ -1103,7 +1122,7 @@ def build_dashboard() -> dict:
           options={"tooltip": {"mode": "multi"}, "legend": {"displayMode": "list", "placement": "bottom"}}),
     # the driver-monitoring camera: how much attention openpilot credits the driver with, when it saw them distracted,
     # and its warnings (level 1-3; 3 = it will slow down and lock you out after repeats)
-    panel(34, "Driver attention (driver monitoring)", "timeseries", 0, 90, 18, 6,
+    panel(34, "Driver attention (driver monitoring)", "timeseries", 0, 97, 18, 6,
           [target(src("driver_monitor", ' and r.route == "${route}" and r._field == "awareness_pct"') + DOWNSAMPLE),
            # distracted only in drive or reverse: parked, the camera's verdict means nothing
            target(src("driver_monitor", ' and r.route == "${route}" and (r._field == "distracted" or r._field == "in_gear")') +
@@ -1198,29 +1217,63 @@ def build_dashboard() -> dict:
                          {"matcher": {"id": "byName", "options": "source"},
                           "properties": [{"id": "description", "value": "rlog = from the full logs copied off the device (exact cause); qlog = cloud logs only"}]}]},
           options={"showHeader": True, "cellHeight": "sm"}),
-    panel(29, "Steering tracking (what openpilot asked for vs what the car did)", "timeseries", 0, 96, 18, 7,
-          [target(zero_filled("steering", ["desired_lat_accel", "actual_lat_accel", "saturated"])),
+    panel(29, "Position in lane", "timeseries", 0, 84, 18, 7,
+          # ct.extract.LanePosition, in metres. Every window is drawn; where a line was unclear (quality < 2) an
+          # "estimated" overlay marks it. Windows of at least 1 s on 2 Hz cloud data (shorter leaves single points that
+          # don't draw), 0.2 s where the device copy's 10 Hz data is there. Empty windows are nulls: gaps under 1 s are
+          # joined (a drive with only some rlogs copied has 2 Hz stretches in 0.2 s windows), longer ones stay gaps
+          [target('import "internal/debug"\n'
+                  'full = ' + src("lane", ' and r.route == "${route}" and r.source == "rlog" and r._field == "quality"').lstrip() +
+                  '  |> limit(n: 1)\n  |> count()\n  |> findRecord(fn: (key) => true, idx: 0)\n'
+                  'floor = if exists full._value then 200ms else 1s\n'
+                  'every = if int(v: v.windowPeriod) < int(v: floor) then floor else v.windowPeriod\n'
+                  'base = ' + src("lane", ' and r.route == "${route}" and (r._field == "offset" or r._field == "width" or r._field == "quality")').lstrip() +
+                  'w = union(tables: [\n'
+                  '    base |> filter(fn: (r) => r._field != "quality") |> aggregateWindow(every: every, fn: mean, createEmpty: true),\n'
+                  '    base |> filter(fn: (r) => r._field == "quality") |> map(fn: (r) => ({r with _value: float(v: r._value)}))\n'
+                  '        |> aggregateWindow(every: every, fn: min, createEmpty: true)])\n'
+                  '  |> keep(columns: ["_time", "_value", "_field"])\n  |> group()\n'
+                  '  |> pivot(rowKey: ["_time"], columnKey: ["_field"], valueColumn: "_value")\n'
+                  'union(tables: [\n'
+                  f'    w |> map(fn: (r) => ({{_time: r._time, _field: "position", _value: if exists r.offset then r.offset * {LEAD_DIST_FACTOR} else debug.null(type: "float")}})),\n'
+                  f'    w |> map(fn: (r) => ({{_time: r._time, _field: "position_estimated",\n'
+                  f'        _value: if exists r.offset and exists r.quality and r.quality < 2.0 then r.offset * {LEAD_DIST_FACTOR} else debug.null(type: "float")}})),\n'
+                  f'    w |> map(fn: (r) => ({{_time: r._time, _field: "left_line", _value: if exists r.width then r.width * {-LEAD_DIST_FACTOR / 2} else debug.null(type: "float")}})),\n'
+                  f'    w |> map(fn: (r) => ({{_time: r._time, _field: "right_line", _value: if exists r.width then r.width * {LEAD_DIST_FACTOR / 2} else debug.null(type: "float")}}))])\n'
+                  '  |> group(columns: ["_field"])\n  |> sort(columns: ["_time"])'),
            target(ODOMETER + '  |> aggregateWindow(every: v.windowPeriod, fn: last, column: "d", createEmpty: false)\n'
                   '  |> map(fn: (r) => ({_time: r._time, _value: r.d, _field: "distance"}))\n  |> group(columns: ["_field"])', "B")],
           maxDataPoints=2000, links=[{"title": "Zoom to this drive", "url": ZOOM_URL}],
-          description="While openpilot steers: the lateral acceleration it asked for vs what the car actually did.\n\n"
-                      "- the gap between the lines is the tracking error (the Drives table's Steer Error)\n"
-                      "- **shaded**: the steering request was at its limit (saturated) and couldn't turn harder\n"
-                      "- **0**: openpilot wasn't steering (or nearly stopped)",
-          fieldConfig={"defaults": {"unit": "accMS2", "custom": {"lineWidth": 1, "fillOpacity": 0, "showPoints": "never",
-                                                                 "axisWidth": AXIS_WIDTH, "spanNulls": False}},
+          description="Where the car sat in its lane, from the driving model's lane lines: above the middle line = right of "
+                      "the lane's centre, below = left.\n\n"
+                      "- **position**: the middle of the car\n"
+                      "- **estimated** (orange dashes over it): the model wasn't sure of one or both lines, so the position is "
+                      "partly guessed (the missing line is placed the lane's last measured width away)\n"
+                      "- **left / right line**: the lane's edges (half the lane width either side)\n"
+                      "- the car's side touches a line when its middle is about half the car's width inside it\n"
+                      "- a lane change shows as the position crossing a line and jumping to the new lane\n"
+                      "- **blank**: no lane lines at all, or no data\n\n"
+                      "More detail on drives copied off the device (Rivian: 10 Hz rather than 2). "
+                      "Red bands are errors. Hover for the distance into the drive.",
+          fieldConfig={"defaults": {"unit": LEAD_DIST_UNIT, "decimals": 1,
+                                    "custom": {"lineWidth": 1, "fillOpacity": 0, "showPoints": "never",
+                                               "axisWidth": AXIS_WIDTH, "spanNulls": 1000}},
                        "overrides": [
-                         {"matcher": {"id": "byName", "options": "desired_lat_accel"},
-                          "properties": [{"id": "displayName", "value": "asked for"}, {"id": "color", "value": {"mode": "fixed", "fixedColor": "#5794F2"}},
-                                         {"id": "custom.lineStyle", "value": {"fill": "dash", "dash": [6, 4]}}]},
-                         {"matcher": {"id": "byName", "options": "actual_lat_accel"},
-                          "properties": [{"id": "displayName", "value": "actual"}, {"id": "color", "value": {"mode": "fixed", "fixedColor": "#73BF69"}}]},
-                         {"matcher": {"id": "byName", "options": "saturated"},
-                          "properties": [{"id": "displayName", "value": "at limit (saturated)"}, {"id": "unit", "value": "percentunit"},
-                                         {"id": "custom.axisPlacement", "value": "hidden"}, {"id": "min", "value": 0}, {"id": "max", "value": 1},
-                                         {"id": "custom.drawStyle", "value": "bars"}, {"id": "custom.fillOpacity", "value": 25},
-                                         {"id": "custom.lineWidth", "value": 0},
-                                         {"id": "color", "value": {"mode": "fixed", "fixedColor": "#F2495C"}}]},
+                         # ±2 m either way, on the lane series only (on the defaults the hidden distance series grows an axis)
+                         {"matcher": {"id": "byRegexp", "options": "^(position|position_estimated|left_line|right_line)$"},
+                          "properties": [{"id": "min", "value": -2 * LEAD_DIST_FACTOR}, {"id": "max", "value": 2 * LEAD_DIST_FACTOR}]},
+                         {"matcher": {"id": "byName", "options": "position"},
+                          "properties": [{"id": "displayName", "value": "position (+ = right of centre)"},
+                                         {"id": "color", "value": {"mode": "fixed", "fixedColor": "#73BF69"}}, {"id": "custom.lineWidth", "value": 2}]},
+                         # drawn over the position where it was partly guessed: green with orange dashes
+                         {"matcher": {"id": "byName", "options": "position_estimated"},
+                          "properties": [{"id": "displayName", "value": "estimated (a lane line unclear)"},
+                                         {"id": "color", "value": {"mode": "fixed", "fixedColor": "#FF9830"}}, {"id": "custom.lineWidth", "value": 2},
+                                         {"id": "custom.lineStyle", "value": {"fill": "dash", "dash": [4, 4]}}]},
+                         *[{"matcher": {"id": "byName", "options": f"{side}_line"},
+                            "properties": [{"id": "displayName", "value": f"{side} line"}, {"id": "color", "value": {"mode": "fixed", "fixedColor": "#8e8e8e"}},
+                                           {"id": "custom.lineStyle", "value": {"fill": "dash", "dash": [6, 4]}}]}
+                           for side in ("left", "right")],
                          DISTANCE_TOOLTIP]},
           options={"tooltip": {"mode": "multi"}, "legend": {"displayMode": "list", "placement": "bottom"}}),
     panel(30, "Following (car ahead)", "timeseries", 0, 103, 18, 7,
@@ -1401,7 +1454,8 @@ def build_dashboard() -> dict:
       *[{"name": name, "label": label, "type": "query", "datasource": DS, "multi": True, "includeAll": True,
          "current": {"selected": True, "text": ["All"], "value": ["$__all"]}, "refresh": 1, "sort": 1,
          "query": {"query": src("route", f' and r._field == "{field}"').replace("start: v.timeRangeStart, stop: v.timeRangeStop", "start: -10y") +
-                            '  |> group()\n  |> map(fn: (r) => ({_value: if r._value == "" then "none" else r._value}))\n'
+                            # {r with ...}: a map to a bare {_value: ...} record drops rows whose stored value is "" (InfluxDB 2.9.1)
+                            '  |> group()\n  |> map(fn: (r) => ({r with _value: if r._value == "" then "none" else r._value}))\n'
                             '  |> distinct()', "refId": "v"}}
         for name, label, field in (("small_model", "Small model", "model_small"), ("big_model", "Big model", "model_big"))],
       # the drives that ran the picked models: what DRIVER_FILTER filters on (all of them while both are All)
@@ -1488,8 +1542,9 @@ def build_dashboard() -> dict:
                   '  |> group()\n  |> map(fn: (r) => ({_time: r._time, text: r.kind + ": " + r._value, tags: "collision alert"}))'},
        "mappings": {"text": {"source": "field", "value": "text"}, "tags": {"source": "field", "value": "tags"}}},
       {"name": "Errors", "enable": True, "iconColor": "rgba(196, 22, 42, 0.35)", "datasource": DS,
-       "description": "Shades the stretches where openpilot reported a fault, on Speed & steering angle, Steering torque and Braking.",
-       "filter": {"exclude": False, "ids": [7, 8, 20]},
+       "description": "Shades the stretches where openpilot reported a fault, on Speed & steering angle, Steering torque, "
+                      "Position in lane and Braking.",
+       "filter": {"exclude": False, "ids": [7, 8, 20, 29]},
        "target": {"refId": "Anno", "query": FAULT_LABELS + src("fault", ' and r.route == "${route}" and (r._field == "end_ns" or r._field == "duration_s")') +
                   '  |> pivot(rowKey: ["_time"], columnKey: ["_field"], valueColumn: "_value")\n  |> group()\n'
                   '  |> map(fn: (r) => ({_time: r._time, timeEnd: time(v: r.end_ns),\n'

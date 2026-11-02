@@ -9,6 +9,9 @@ from influxdb_client import Point, WritePrecision
 FAULTS = {
   # EPS latched its torque-overlay fault (H_CAN_EPSS_ToiFlt): it ignores openpilot's steering. rlog CAN only.
   "eps_torque_fault": (5, "EPS ignoring steering (ToiFlt)", 2.0, 0.5, 0),
+  # EPS silently not applying openpilot's torque: we request it (ACM_lkaActToi) but ToiActive stays 0 with no ToiFlt,
+  # for 0.3 s or more while openpilot steers in drive. rlog CAN only. Stitched across segments by sync.stitch_faults.
+  "rack_ignoring_torque": (8, "rack ignoring torque", 1.0, 0.3, 0),
   # EPS reports a steering system fault / angle controller (EAC) fault. rlog CAN only.
   "eps_fault": (4, "EPS fault", 2.0, 0.0, 0),
   # panda safety blocked openpilot's commands while it was steering (safetyTxBlocked rising). qlog, so every drive.
@@ -26,7 +29,7 @@ FAULTS = {
 }
 
 # codes from least to most severe
-SEVERITY = [6, 7, 1, 2, 3, 4, 5]
+SEVERITY = [6, 7, 1, 2, 3, 4, 8, 5]
 
 
 class FaultTracker:

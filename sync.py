@@ -5,7 +5,7 @@
   ./sync.py                 # one cloud pull: last 4 days of routes
   ./sync.py --days 30       # look further back
   ./sync.py --device        # one device pull (if reachable) + ingest anything copied off the device
-  ./sync.py --device --now --route 00000092   # pull one drive now, even with the car on (DEVICE_IP from .env or env)
+  ./sync.py --device --route 00000092   # pull one drive now (DEVICE_IP from .env or env)
   ./sync.py --reload ROUTE  # delete and re-ingest one route (e.g. after changing extract.py)
   ./sync.py --reload all    # re-ingest everything in the archive
 """
@@ -22,6 +22,7 @@ from influxdb_client.client.write_api import SYNCHRONOUS
 from ct.config import ARCHIVE, ENV, load_state, save_state, secret
 from ct import device
 from ct.extract import extract_segment
+from ct.faults import FAULTS, FaultTracker
 from ct.rlog import BRANDS, extract_rlog
 from ct.safety import extract_alerts
 from ct.sources import (download_qlogs, driver_at, fork_name, github_status, list_routes, newest_software, route_dir,
@@ -29,6 +30,8 @@ from ct.sources import (download_qlogs, driver_at, fork_name, github_status, lis
 
 
 DELETE = None  # InfluxDB delete API, set in main()
+QUERY = None  # InfluxDB query API, set in main()
+STITCHED = ("rack_ignoring_torque",)  # rlog faults that often run on across segment boundaries
 
 
 def replace_qlog_engagements(route: str, span: tuple[int, int] | None) -> None:
@@ -40,6 +43,41 @@ def replace_qlog_engagements(route: str, span: tuple[int, int] | None) -> None:
   for pred in (f'_measurement="engagement" AND route="{route}" AND source="qlog"',
                f'_measurement="fault" AND route="{route}" AND fault="engage_dropped"'):
     DELETE.delete(start, stop, pred, bucket=ENV["INFLUX_BUCKET"], org=ENV["INFLUX_ORG"])
+
+
+def stitch_faults(write, tags: dict, names=STITCHED) -> None:
+  """Each rlog segment is decoded alone, so a fault running across segments is stored once per segment: rewrite the
+  route's intervals of these faults with neighbours closer than the fault's merge gap joined into one."""
+  if QUERY is None or DELETE is None:
+    return
+  route = tags["route"]
+  for name in names:
+    rows = QUERY.query(f'''from(bucket: "{ENV["INFLUX_BUCKET"]}")
+  |> range(start: 0)
+  |> filter(fn: (r) => r._measurement == "fault" and r.route == "{route}" and r.fault == "{name}")
+  |> filter(fn: (r) => r._field == "end_ns" or r._field == "frames")
+  |> pivot(rowKey: ["_time"], columnKey: ["_field"], valueColumn: "_value")
+  |> group()
+  |> sort(columns: ["_time"])
+  |> map(fn: (r) => ({{start: int(v: r._time), end_ns: r.end_ns, frames: r.frames}}))''', org=ENV["INFLUX_ORG"])
+    spans = [(r["start"], int(r["end_ns"]), int(r["frames"])) for t in rows for r in t.records]
+    joined: list[list[int]] = []
+    for start, end, frames in spans:
+      if joined and start - joined[-1][1] <= FAULTS[name][2] * 1e9:
+        joined[-1][1:] = [max(end, joined[-1][1]), joined[-1][2] + frames]
+      else:
+        joined.append([start, end, frames])
+    if len(joined) == len(spans):
+      continue  # nothing to join
+    tracker = FaultTracker(tags, 0)
+    for start, end, frames in joined:
+      tracker.add(name, start, end, frames=frames)
+    points = tracker.points
+    # a µs either side: datetimes don't hold nanoseconds; the next unjoined interval is at least the merge gap away
+    DELETE.delete(dt.datetime.fromtimestamp(spans[0][0] / 1e9 - 1e-6, dt.UTC), dt.datetime.fromtimestamp(spans[-1][1] / 1e9 + 1e-6, dt.UTC),
+                  f'_measurement="fault" AND route="{route}" AND fault="{name}"', bucket=ENV["INFLUX_BUCKET"], org=ENV["INFLUX_ORG"])
+    write.write(ENV["INFLUX_BUCKET"], ENV["INFLUX_ORG"], points)
+    log(f"{route}: {name}: {len(spans)} per-segment intervals joined into {len(joined)}")
 
 
 def write_alerts(write, route: dict, segs, tags: dict) -> int:
@@ -221,18 +259,19 @@ def ingest_rlogs(write, state, changes, limit: int | None = 30) -> int:
       save_state(state)
     if new:  # redo the close-ups of collision alerts in these segments from the rlog
       write_alerts(write, r, new, tags)
+      stitch_faults(write, tags)
     if limit is not None and n_segs >= limit:
       return n_segs
   return n_segs
 
 
-def device_pull(write, state, changes, now: bool = False, route: str | None = None) -> None:
+def device_pull(write, state, changes, verbose: bool = False, route: str | None = None) -> None:
   if not ENV.get("DEVICE_IP") or not device.reachable():
-    if now:
+    if verbose:
       log(f"device: {ENV.get('DEVICE_IP') or 'DEVICE_IP not set'} not reachable")
     return
   try:
-    device.pull(log, now, route)
+    device.pull(log, route)
   except Exception as e:  # powered off mid-copy etc.; resume next time
     log(f"device: pull failed: {e}")
   try:
@@ -307,7 +346,6 @@ def main() -> int:
   ap.add_argument("--days", type=float, default=4)
   ap.add_argument("--reload", metavar="ROUTE|all")
   ap.add_argument("--device", action="store_true", help="one device pull + ingest of anything copied off the device")
-  ap.add_argument("--now", action="store_true", help="with --device: copy finished drives even while the car is on")
   ap.add_argument("--route", help="with --device: only this drive (route id or prefix, e.g. 00000092)")
   ap.add_argument("--daemon", action="store_true")
   ap.add_argument("--rlogs", action="store_true", help="ingest braking + EPS fault data from all rlogs copied off the device")
@@ -316,8 +354,9 @@ def main() -> int:
   state = load_state()
   with InfluxDBClient(url=ENV["INFLUX_URL"], token=secret("influx_token"), org=ENV["INFLUX_ORG"], timeout=60_000) as client:
     write = client.write_api(write_options=SYNCHRONOUS)
-    global DELETE
+    global DELETE, QUERY
     DELETE = client.delete_api()
+    QUERY = client.query_api()
 
     if args.daemon:
       import setup_grafana
@@ -369,7 +408,7 @@ def main() -> int:
       return 0
 
     if args.device:
-      device_pull(write, state, changes, args.now, args.route)
+      device_pull(write, state, changes, True, args.route)
       while ingest_rlogs(write, state, changes):  # the whole backlog, not one daemon-sized batch
         pass
       return 0

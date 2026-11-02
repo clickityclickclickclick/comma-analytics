@@ -9,7 +9,7 @@ import cantools
 from influxdb_client import Point, WritePrecision
 
 from .config import ROOT
-from .extract import read_events
+from .extract import FORWARD_GEARS, LanePosition, read_events
 from .engage import EngagementTracker, alert_cause
 from .faults import FaultTracker
 
@@ -24,6 +24,8 @@ SIGNALS = {
   (0, "iBESP2"): {"iBESP2_BrakePedalApplied": "brake_applied"},
   (0, "VDM_PropStatus"): {"VDM_AcceleratorPedalPosition": "accel_pedal", "VDM_VehicleSpeed": "speed_kph"},
   (0, "VDM_OutputSignals"): {"VDM_BrakeLightRequest": "brake_light"},
+  # the rack applying openpilot's torque, for the steering torque graph (faults use the full-rate copy below)
+  (0, "EPAS_SystemStatus"): {"H_CAN_EPSS_ToiActive": "rack_toi"},
   (128, "ACM_longitudinalRequest"): {"ACM_AccelerationRequest": "op_accel_request"},
 }
 _IDS = {(bus, _db.get_message_by_name(name).frame_id): sigs for (bus, name), sigs in SIGNALS.items()}
@@ -31,6 +33,10 @@ _IDS = {(bus, _db.get_message_by_name(name).frame_id): sigs for (bus, name), sig
 _EPS_STATUS = _db.get_message_by_name("EPAS_SystemStatus")
 _EPS_ADAS = _db.get_message_by_name("EPAS_AdasStatus")
 EAC_FAULT = 4  # EPAS_EacStatus: angle controller permanently faulted
+# what openpilot asked the EPS for (sendcan bus 0): ACM_lkaActToi = 1 requests torque overlay
+_LKA_CMD = _db.get_message_by_name("ACM_lkaHbaCmd")
+# the EPS takes ~0.03 s to start applying torque after ActToi goes 0 -> 1; longer than this without it = ignoring us
+IGNORE_MIN_NS = 0.3e9
 # the driver's stalk, as the VDM reports it on bus 0: pushed up (1, 2) = cancel
 _VDM_ADAS = _db.get_message_by_name("VDM_AdasSts")
 STALK_UP = (1, 2)
@@ -41,6 +47,7 @@ DECEL_CODES = {"": 0, "hold": 1, "regen": 2, "friction": 3}
 DECEL = -0.3          # m/s²: slower than this counts as braking
 PRESSURE = 1.0        # bar of master-cylinder pressure = friction brakes working
 MOVING_KPH = 3.0
+LANE_EVERY_NS = 0.09e9  # position in lane at ~10 Hz (the model runs at 20)
 
 
 def decel_source(v: dict) -> str:
@@ -58,8 +65,11 @@ def extract_rlog(path, tags: dict, fallback_start_ns: int | None) -> tuple[list[
   offset = None
   cur: dict = {}
   rows: list[tuple[int, dict]] = []
-  eps: list[tuple[int, bool, bool]] = []  # (t, ToiFlt, other EPS fault)
+  lanes: list[tuple[int, dict]] = []  # position in lane at full detail (the qlog has it at 2 Hz)
+  lane_pos = LanePosition()
+  eps: list[tuple[int, bool, bool, bool]] = []  # (t, ToiFlt, other EPS fault, torque requested but not applied)
   eac_fault = False
+  lat_active, in_drive, act_toi = False, False, False
   first = None
   last = None
   last_emit = 0
@@ -95,9 +105,11 @@ def extract_rlog(path, tags: dict, fallback_start_ns: int | None) -> tuple[list[
       return [], {}
     elif w == "carState":
       v_ego = m.carState.vEgo
+      in_drive = str(m.carState.gearShifter) in FORWARD_GEARS
       if m.carState.brakePressed:
         brake_t = t
     elif w == "carControl":
+      lat_active = m.carControl.latActive
       if m.carControl.cruiseControl.cancel:
         op_cancel_t = t
     elif w == "onroadEvents":
@@ -110,6 +122,13 @@ def extract_rlog(path, tags: dict, fallback_start_ns: int | None) -> tuple[list[
       if en != engaged:
         transitions.append((t, en, v_ego, rlog_cause(t) if engaged and not en else None))
         engaged = en
+    elif w == "drivingModelData":
+      if not lanes or t - lanes[-1][0] >= LANE_EVERY_NS:
+        lanes.append((t, lane_pos.fields(m.drivingModelData)))
+    elif w == "sendcan":
+      for c in m.sendcan:
+        if c.src == 0 and c.address == _LKA_CMD.frame_id:
+          act_toi = _LKA_CMD.decode(bytes(c.dat), decode_choices=False)["ACM_lkaActToi"] == 1
     elif w == "can":
       for c in m.can:
         if c.src == 0 and c.address == _VDM_ADAS.frame_id:
@@ -119,7 +138,9 @@ def extract_rlog(path, tags: dict, fallback_start_ns: int | None) -> tuple[list[
           eac_fault = _EPS_ADAS.decode(bytes(c.dat), decode_choices=False)["EPAS_EacStatus"] == EAC_FAULT
         elif c.src == 0 and c.address == _EPS_STATUS.frame_id:
           d = _EPS_STATUS.decode(bytes(c.dat), decode_choices=False)
-          eps.append((t, d["H_CAN_EPSS_ToiFlt"] == 1, d["EPAS_SteeringFault"] == 1 or eac_fault))
+          toi_flt = d["H_CAN_EPSS_ToiFlt"] == 1
+          ignoring = lat_active and in_drive and act_toi and d["H_CAN_EPSS_ToiActive"] == 0 and not toi_flt
+          eps.append((t, toi_flt, d["EPAS_SteeringFault"] == 1 or eac_fault, ignoring))
         sigs = _IDS.get((c.src, c.address))
         if sigs:
           d = _db.decode_message(c.address, bytes(c.dat), decode_choices=False)
@@ -151,10 +172,27 @@ def extract_rlog(path, tags: dict, fallback_start_ns: int | None) -> tuple[list[
     for k, val in tags.items():
       p = p.tag(k, val)
     points.append(p)
+  for t, f in lanes:
+    p = Point("lane").time(t + offset, WritePrecision.NS).tag("source", "rlog")
+    for k, val in tags.items():
+      p = p.tag(k, val)
+    for k, val in f.items():
+      p = p.field(k, val)
+    points.append(p)
   faults = FaultTracker(tags, offset)
-  for t, toi, other in eps:
-    faults.update("eps_torque_fault", t, toi)
-    faults.update("eps_fault", t, other)
+  run: list[int] = []  # frame times of the current unbroken stretch of the rack ignoring our torque request
+  for t, toi, other, ignoring in eps + [(0, False, False, False)]:  # sentinel ends the last stretch
+    if t:
+      faults.update("eps_torque_fault", t, toi)
+      faults.update("eps_fault", t, other)
+    if ignoring:
+      run.append(t)
+    elif run:
+      # only unbroken stretches count: the EPS's short catch-up after each ActToi 0 -> 1 must not merge into one
+      if run[-1] - run[0] >= IGNORE_MIN_NS:
+        for rt in run:
+          faults.update("rack_ignoring_torque", rt, True)
+      run = []
   points += faults.finish(eps[-1][0] if eps else None)
   # engagements: replace the qlog's guesses for this segment (sync.ingest_rlogs deletes them over summary["span"])
   def pt(meas: str, t: int) -> Point:

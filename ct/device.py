@@ -1,8 +1,9 @@
 """Drives copied straight off the device (archive/device/<route>--<seg>/{qlog,rlog}.zst).
 
-The comma is on switched power, so it's only reachable for a short while after parking at home.
-`pull()` is cheap to call often: a port check, then (only while parked) rsync of finished segments,
-qlogs first so a short window still gets the dashboard data, then rlogs. rsync resumes next time.
+The comma is only reachable on the home network, often just for a minute or two as the car starts (it then
+moves to the car's hotspot), sometimes after parking. `pull()` is cheap to call often: a port check, then rsync
+of finished segments whether or not the car is on, qlogs first so a short window still gets the dashboard data,
+then rlogs. rsync resumes next time.
 
 Routes get a route.json (from the cloud if it already wrote one, else built from the logs) and their
 qlogs are linked into the normal archive layout so sync.py can ingest (and --reload) them like any other.
@@ -44,24 +45,14 @@ def _ssh(cmd: str, timeout: int = 30) -> str:
   return subprocess.run(["ssh", *_ssh_opts(), _host(), cmd], capture_output=True, text=True, timeout=timeout, check=True).stdout
 
 
-def finished_segments(now: bool = False) -> list[str] | None:
-  """Segment dirs safe to copy, or None if the car isn't parked (never copy during a drive).
-  now: copy even with the car on. A segment still being written has a .lock file, so it's skipped either way."""
-  parked = "" if now else '[ "$(cat /data/params/d/IsOffroad 2>/dev/null)" = "1" ] || exit 0; '
-  out = _ssh(parked + f'echo PARKED; cd {REALDATA} && '
-             'for d in *--*--*; do ls "$d"/*.lock >/dev/null 2>&1 || echo "$d"; done')
-  lines = out.split()
-  if not lines or lines[0] != "PARKED":
-    return None
-  return lines[1:]
+def finished_segments() -> list[str]:
+  """Segment dirs safe to copy: a segment still being written has a .lock file."""
+  return _ssh(f'cd {REALDATA} && for d in *--*--*; do ls "$d"/*.lock >/dev/null 2>&1 || echo "$d"; done').split()
 
 
-def pull(log, now: bool = False, route: str | None = None) -> int:
+def pull(log, route: str | None = None) -> int:
   """Copy finished segments' logs (only `route`'s, if given). Returns the number of files transferred."""
-  segs = finished_segments(now)
-  if segs is None:
-    log("device: reachable but not parked, skipping")
-    return 0
+  segs = finished_segments()
   if route:
     segs = [s for s in segs if s.startswith(route)]
     log(f"device: {len(segs)} finished segments of {route} on the device")
@@ -70,7 +61,9 @@ def pull(log, now: bool = False, route: str | None = None) -> int:
   for name in ("qlog.zst", "rlog.zst"):
     files = "\n".join(f"{s}/{name}" for s in segs) + "\n"
     # partial files wait in .rsync-partial, so a half-copied rlog never looks complete
+    # the car may be on: the device's rsync gets idle CPU and disk priority so openpilot always comes first
     p = subprocess.run(["rsync", "-a", "--partial-dir=.rsync-partial", "--ignore-missing-args", "--out-format=%n", "--files-from=-",
+                        "--rsync-path=ionice -c3 -p $$ 2>/dev/null; exec nice -n 19 rsync",
                         "-e", "ssh " + " ".join(_ssh_opts()), f"{_host()}:{REALDATA}/", f"{DEVICE}/"],
                        input=files, capture_output=True, text=True, timeout=3600)
     copied = [ln for ln in p.stdout.splitlines() if ln.endswith(".zst")]

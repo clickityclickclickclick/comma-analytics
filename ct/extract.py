@@ -42,6 +42,42 @@ LOW_LANE_PROB = 0.5
 # steering tracking / following: only while moving
 TRACK_MOVING = 5.0  # m/s
 
+# position in lane: below this the model has no line at all, so there is nothing to place the car against
+NO_LINE_PROB = 0.1
+LANE_WIDTH = (2.0, 5.0)  # m: a plausible lane width; anything else is a misread
+LANE_WIDTH_START = 3.0   # m, until the segment's first clear sight of both lines
+
+
+class LanePosition:
+  """Where the car sits in its lane, from drivingModelData's lane lines (sideways distance from the car, right = +).
+
+  Every sample is kept; `quality` says how far to trust it: 2 = both lines clear, 1 = one clear (the other placed
+  the lane's last measured width away), 0 = neither clear (their best guess). Raw line positions and confidences are
+  stored as well, so the rules can change at query time."""
+
+  def __init__(self):
+    self.width = LANE_WIDTH_START
+
+  def fields(self, dm) -> dict:
+    ll = dm.laneLineMeta
+    f = {"left_y": round(ll.leftY, 3), "right_y": round(ll.rightY, 3), "left_prob": round(ll.leftProb, 3),
+         "right_prob": round(ll.rightProb, 3), "lane_change": int(str(dm.meta.laneChangeState) != "off")}
+    left, right = ll.leftProb > LOW_LANE_PROB, ll.rightProb > LOW_LANE_PROB
+    if left and right:
+      if LANE_WIDTH[0] < ll.rightY - ll.leftY < LANE_WIDTH[1]:
+        self.width = ll.rightY - ll.leftY
+      centre, quality = (ll.leftY + ll.rightY) / 2, 2
+    elif left:
+      centre, quality = ll.leftY + self.width / 2, 1
+    elif right:
+      centre, quality = ll.rightY - self.width / 2, 1
+    elif max(ll.leftProb, ll.rightProb) >= NO_LINE_PROB:
+      centre, quality = (ll.leftY + ll.rightY) / 2, 0
+    else:
+      return f
+    f.update(offset=round(-centre, 3), width=round(self.width, 3), quality=quality)  # offset: + = right of centre
+    return f
+
 # driver monitoring: the driver's state as one code per moment, worse = higher (the timeline row shows each window's worst)
 # Warnings: "distracted" ones (the camera policy) say Pay Attention, "unresponsive" ones (the wheel-touch policy) say Touch
 # Steering Wheel; at the same level the two are equally bad
@@ -103,6 +139,7 @@ def extract_segment(path, tags: dict, fallback_start_ns: int | None) -> tuple[li
 
   points: list[Point] = []
   vision_sum = {"lane_sum": 0.0, "lane_n": 0, "low_n": 0}
+  lane_pos = LanePosition()
   steer_sum = {"err_sq_sum": 0.0, "n": 0, "sat_n": 0}
   lead_sum = {"gap_sum": 0.0, "n": 0}
   # driver monitoring while openpilot steered and the car moved: seconds, seconds distracted, warnings (0 -> any level)
@@ -247,6 +284,10 @@ def extract_segment(path, tags: dict, fallback_start_ns: int | None) -> tuple[li
       if cur["v"] > VISION_MOVING:  # lane lines hide behind traffic at stops, so only while moving
         p = p.field("lane_moving", round(lane, 3))
       points.append(p)
+      lp = pt("lane", t).tag("source", "qlog")
+      for k, v in lane_pos.fields(dm).items():
+        lp = lp.field(k, v)
+      points.append(lp)
       if cur["v"] > VISION_MOVING:
         vision_sum["lane_sum"] += lane
         vision_sum["lane_n"] += 1

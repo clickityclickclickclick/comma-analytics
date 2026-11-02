@@ -24,9 +24,12 @@ Home Assistant names them: see *driver names* under Setup):
 - **Event log (follows the cursor):** beside the charts, every event and alert plus each change of the timeline's
   steering control, attention, lane confidence and model intent rows. Hover over any chart and it scrolls to that
   moment.
-- **Route map** coloured by mode, **speed and steering angle**, and driver / EPS / openpilot **steering torque**.
-- **Errors:** the panda blocking steering commands, openpilot steering faults, CAN errors and openpilot system
-  alerts (commIssue, locationd/paramsd errors, ...). Startup noise is filtered out.
+- **Route map** coloured by mode, **speed and steering angle**, and **steering torque**: the driver's, what openpilot
+  asked for, the EPS's own where the car reports it, and on a Rivian whether the rack was applying openpilot's torque
+  (drives copied off the device).
+- **Errors:** the panda blocking steering commands, openpilot steering faults, the steering rack silently ignoring
+  openpilot's torque (Rivian, drives copied off the device), CAN errors and openpilot system alerts (commIssue,
+  locationd/paramsd errors, ...). Startup noise is filtered out.
 - **Driving model:** which model drove each moment and per drive, by name, from sunnypilot's model manager. With a
   Chestnut accelerator this covers the big model, its loading and any fallback to the device's own model.
 - **Time to ready:** from the car coming on to openpilot running and then to the first driving-model output,
@@ -41,8 +44,9 @@ Home Assistant names them: see *driver names* under Setup):
 - **Driver attention:** from the driver-monitoring camera: openpilot's awareness budget, when it judged you
   distracted, and its alerts as the device names them (Pay Attention / Touch Steering Wheel, levels 1–3); per drive,
   the share of steered time you were distracted and the warning count.
-- **Steering tracking and following:** lateral acceleration openpilot asked for vs what the car did (with when it hit
-  its limit), and time gap / distance to the car ahead.
+- **Position in lane and following:** where the car sat between the lane lines, from the driving model (2 Hz, or 10 Hz
+  on Rivian drives copied off the device), with stretches marked where a missing line had to be estimated; per drive,
+  how closely the car followed openpilot's steering (Steer Error); and time gap / distance to the car ahead.
 - **Visibility:** the driving model's lane confidence, vision uncertainty and road-camera exposure (fog, rain and
   glare show up as dips), plus the road camera's snapshot from every minute (about 3.5 KB each; already in the logs).
 - **Braking, regen vs friction** (Rivian, drives copied off the device): shown once any drive has it. Panels like
@@ -58,7 +62,7 @@ It runs as three containers: `sync` (this code), InfluxDB 2 and Grafana. Everyth
 The dashboard is saved in Grafana's v2 format (its panels can hide themselves on drives where they'd be empty), so it
 needs Grafana 13.2 or newer: the bundled one is, and so must be any Grafana of your own you point it at.
 
-A community project: not made by or affiliated with comma.ai.
+A community project: not made by or affiliated with comma.ai. See [CHANGELOG.md](CHANGELOG.md) for what's changed.
 
 ## Requirements
 
@@ -88,7 +92,7 @@ has. Watch it with `docker compose logs -f sync`.
 | **time zone, units, port** | Defaults to this machine's time zone, imperial or metric to match it (US/UK → miles), and the first free port from 3000. Times are stored in UTC and shown in this time zone; distances are stored in miles and converted for display, so switching units later needs no re-import. |
 | InfluxDB / Grafana passwords and tokens | Generated for you, kept in `.env`. |
 | **driver names** (optional) | Without Home Assistant, every drive gets one name (`DRIVER_NAME`). With it, any HA sensor whose state is the current driver's name labels each drive. On a **Rivian**, that's the *Active Driver* sensor (`sensor.<vehicle>_active_driver`) from the [Rivian (Unofficial)](https://github.com/bretterer/home-assistant-rivian) integration (HACS), which reports the car's active driver profile; other cars need an integration with a similar sensor. You need the HA URL (as seen from docker: use the LAN IP, not `localhost`), a long-lived access token (HA → your profile → Security → *Long-lived access tokens*) and the sensor's entity id. HA only keeps ~10 days of history, so driver changes are saved locally as they're seen. |
-| **direct device copy** (optional) | If the device is on your home Wi-Fi after you park, the sync copies the full logs (rlogs) over SSH every minute while it's parked. You need the device's LAN IP (give it a DHCP reservation) and an SSH key it trusts. The device trusts the keys on a GitHub account: setup makes a key in `secrets/comma_ssh_key`; add its `.pub` at <https://github.com/settings/keys>, then on the device enable SSH and add your GitHub username under SSH Keys. On a **Rivian R1** the rlogs also give regen-vs-friction braking and EPS fault detection from CAN; for other cars you just get the local copy. |
+| **direct device copy** (optional) | Whenever the device is on your home Wi-Fi (car on or off), the sync copies the full logs (rlogs) of finished segments over SSH, checking every minute; the copy runs at idle priority on the device and resumes where it stopped. You need the device's LAN IP (give it a DHCP reservation) and an SSH key it trusts. The device trusts the keys on a GitHub account: setup makes a key in `secrets/comma_ssh_key`; add its `.pub` at <https://github.com/settings/keys>, then on the device enable SSH and add your GitHub username under SSH Keys. On a **Rivian R1** the rlogs also give regen-vs-friction braking, EPS fault detection, the rack's activity on the steering torque graph and position in lane at 10 Hz; for other cars you just get the local copy. |
 
 `.env.example` documents every setting if you'd rather fill `.env` in by hand.
 
@@ -102,8 +106,8 @@ git pull && docker compose up -d --build    # update; the dashboard is regenerat
 docker compose stop sync
 docker compose run --rm sync python sync.py --days 30      # pull further back from the cloud
 docker compose run --rm sync python sync.py --reload all   # re-ingest the whole archive (after changing ct/*.py)
-docker compose run --rm -e DEVICE_IP=192.168.1.50 sync python sync.py --device --now --route 00000092
-                                            # copy one drive's full logs off the comma now, even with the car on
+docker compose run --rm -e DEVICE_IP=192.168.1.50 sync python sync.py --device --route 00000092
+                                            # copy one drive's full logs off the comma now
 docker compose start sync
 ```
 
