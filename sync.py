@@ -108,7 +108,11 @@ def ingest_route(client, write, route: dict, segs: list[int], done: set[int], ch
     if seg in done:
       continue
     path = route_dir(route["fullname"]) / f"{seg}.qlog.zst"
-    points, summary, seg_info = extract_segment(path, tags, segment_start_ns(route, seg))
+    try:
+      points, summary, seg_info = extract_segment(path, tags, segment_start_ns(route, seg))
+    except Exception as e:  # truncated/corrupt qlog (e.g. upload cut off): skip it, retried next pass
+      log(f"{route['fullname']} seg {seg}: unreadable qlog, skipped ({str(e).splitlines()[0]})")
+      continue
     if seg_info and any(info.get(k) != v for k, v in seg_info.items()):
       info = {**info, **seg_info}
       info_file.write_text(json.dumps(info, indent=1))
