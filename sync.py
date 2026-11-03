@@ -261,7 +261,8 @@ def ingest_rlogs(write, state, changes, limit: int | None = 30) -> int:
         continue
       if points:
         replace_qlog_engagements(tags["route"], summary.get("span"))
-        replace_qlog_model(tags["route"], summary.get("span"))
+        if summary.get("has_model"):
+          replace_qlog_model(tags["route"], summary.get("span"))
         write.write(ENV["INFLUX_BUCKET"], ENV["INFLUX_ORG"], points)
       done.add(seg)
       new.append(seg)

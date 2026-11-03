@@ -165,7 +165,7 @@ def extract_rlog(path, tags: dict, fallback_start_ns: int | None) -> tuple[list[
     offset = fallback_start_ns - first
 
   points = []
-  summary = {"regen_s": 0.0, "friction_s": 0.0, "hold_s": 0.0, "peak_regen": 0.0}
+  summary = {"regen_s": 0.0, "friction_s": 0.0, "hold_s": 0.0, "peak_regen": 0.0, "has_model": bool(model_points)}
   prev = None
   for t, v in rows:
     src = decel_source(v)
