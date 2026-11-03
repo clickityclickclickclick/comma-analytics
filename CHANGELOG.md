@@ -3,6 +3,27 @@
 What changed in each update, newest first. To update, run
 `git pull && docker compose up -d --build`.
 
+## 2026-11-03
+
+**After updating:** drives already in your archive don't show the big model until you re-import them. Run:
+
+```sh
+docker compose stop sync
+docker compose run --rm sync python sync.py --reload all
+docker compose start sync
+```
+
+### Fixed
+
+- Drives that ran the big model through an off-board **Jetlink** host are now shown as big-model drives. The
+  detector looked only at `chestnutState` and `drivingModelData.big`, which Jetlink leaves empty; it now also
+  follows `modelV2.big`, the flag both modeld implementations publish.
+
+### Changed
+
+- The dashboard's model labels and descriptions name the big model's host as **Chestnut or Jetlink** rather than
+  Chestnut alone.
+
 ## 2026-11-02
 
 **After updating:** drives you already have won't show the new lane and steering data until you re-import them.

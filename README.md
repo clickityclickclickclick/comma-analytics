@@ -31,9 +31,9 @@ Home Assistant names them: see *driver names* under Setup):
   openpilot's torque (Rivian, drives copied off the device), CAN errors and openpilot system alerts (commIssue,
   locationd/paramsd errors, ...). Startup noise is filtered out.
 - **Driving model:** which model drove each moment and per drive, by name, from sunnypilot's model manager. With a
-  Chestnut accelerator this covers the big model, its loading and any fallback to the device's own model.
+  Chestnut accelerator or an off-board Jetlink host this covers the big model, its loading and any fallback to the device's own model.
 - **Time to ready:** from the car coming on to openpilot running and then to the first driving-model output,
-  coloured by which model came up (the Chestnut's big model or the device's own).
+  coloured by which model came up (the big model on a Chestnut or Jetlink host, or the device's own).
 - **Engagements:** every disengagement with what ended it (brake, stalk cancel, the car dropping ACC, an openpilot
   cancel or alert), and engagements that didn't stick (under 3 s, not ended by you) flagged as errors. The exact
   cause needs the full logs copied off the device (Rivian CAN); cloud-only drives show "cruise turned off".

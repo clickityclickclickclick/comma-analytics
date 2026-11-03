@@ -30,8 +30,9 @@ OP_ALERTS = {
   "controlsMismatch", "canError", "canBusMissing", "steerUnavailable", "relayMalfunction", "vehicleSensorsInvalid",
   "steerSaturated", "steerTempUnavailableSilent",
 }
-# which driving model is running (sunnypilot forks with a Chestnut accelerator run a "big" model on it, falling back to
-# the device's own "small" model): big while the Chestnut reports a live temperature, loading while it starts up
+# which driving model is running (sunnypilot forks run a "big" model on a Chestnut accelerator or an off-board Jetlink
+# host, falling back to the device's own "small" model): big while the Chestnut reports a live temperature or a
+# modelV2 says it is big, loading while the big model starts up
 MODEL_CODES = {"small": 0, "loading": 1, "big": 2}
 CHESTNUT_STALE_NS = 3e9  # chestnutState is 1 Hz in qlogs
 
@@ -292,6 +293,11 @@ def extract_segment(path, tags: dict, fallback_start_ns: int | None) -> tuple[li
         vision_sum["lane_sum"] += lane
         vision_sum["lane_n"] += 1
         vision_sum["low_n"] += lane < LOW_LANE_PROB
+    elif w == "modelV2":
+      # a big model on a Chestnut or an off-board Jetlink host: modelV2.big is the one flag both modelds publish
+      if m.modelV2.big:
+        chestnut_t = t
+        first_chestnut = first_chestnut or t
     elif w == "driverMonitoringState":
       d = m.driverMonitoringState
       vis = d.visionPolicyState
