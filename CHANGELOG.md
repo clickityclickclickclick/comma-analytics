@@ -5,7 +5,9 @@ What changed in each update, newest first. To update, run
 
 ## 2026-11-03
 
-**After updating:** drives already in your archive don't show the big model until you re-import them. Run:
+**After updating:** new drives show the big model once the comma records `drivingModelData.big` (companion
+AdventurePilot fix). Drives recorded before that fix don't carry the flag in their qlogs; if the full rlog was
+copied off the device, re-import them to recover the model from `modelV2.big`:
 
 ```sh
 docker compose stop sync
@@ -16,8 +18,8 @@ docker compose start sync
 ### Fixed
 
 - Drives that ran the big model through an off-board **Jetlink** host are now shown as big-model drives. The
-  detector looked only at `chestnutState` and `drivingModelData.big`, which Jetlink leaves empty; it now also
-  follows `modelV2.big`, the flag both modeld implementations publish.
+  detector looked only at `chestnutState` and `drivingModelData.big`, which older Jetlink builds leave empty; it now
+  also follows `modelV2.big`, from the qlog where present and from the full rlog otherwise.
 
 ### Changed
 
