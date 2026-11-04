@@ -9,7 +9,7 @@ import cantools
 from influxdb_client import Point, WritePrecision
 
 from .config import ROOT
-from .extract import FORWARD_GEARS, LanePosition, read_events
+from .extract import FORWARD_GEARS, MODEL_CODES, LanePosition, read_events
 from .engage import EngagementTracker, alert_cause
 from .faults import FaultTracker
 
@@ -70,6 +70,9 @@ def extract_rlog(path, tags: dict, fallback_start_ns: int | None) -> tuple[list[
   eps: list[tuple[int, bool, bool, bool]] = []  # (t, ToiFlt, other EPS fault, torque requested but not applied)
   eac_fault = False
   lat_active, in_drive, act_toi = False, False, False
+  model_points: list[tuple[int, int]] = []  # (t, model code) at each change
+  model_secs = {"small": 0.0, "big": 0.0}
+  prev_model: tuple[int, int] | None = None
   first = None
   last = None
   last_emit = 0
@@ -125,6 +128,13 @@ def extract_rlog(path, tags: dict, fallback_start_ns: int | None) -> tuple[list[
     elif w == "drivingModelData":
       if not lanes or t - lanes[-1][0] >= LANE_EVERY_NS:
         lanes.append((t, lane_pos.fields(m.drivingModelData)))
+    elif w == "modelV2":
+      code = MODEL_CODES["big" if m.modelV2.big else "small"]
+      if prev_model is not None and code == prev_model[1]:
+        model_secs["big" if code == MODEL_CODES["big"] else "small"] += min((t - prev_model[0]) / 1e9, 1.0)
+      else:
+        model_points.append((t, code))
+      prev_model = (t, code)
     elif w == "sendcan":
       for c in m.sendcan:
         if c.src == 0 and c.address == _LKA_CMD.frame_id:
@@ -155,7 +165,7 @@ def extract_rlog(path, tags: dict, fallback_start_ns: int | None) -> tuple[list[
     offset = fallback_start_ns - first
 
   points = []
-  summary = {"regen_s": 0.0, "friction_s": 0.0, "hold_s": 0.0, "peak_regen": 0.0}
+  summary = {"regen_s": 0.0, "friction_s": 0.0, "hold_s": 0.0, "peak_regen": 0.0, "has_model": bool(model_points)}
   prev = None
   for t, v in rows:
     src = decel_source(v)
@@ -178,6 +188,17 @@ def extract_rlog(path, tags: dict, fallback_start_ns: int | None) -> tuple[list[
       p = p.tag(k, val)
     for k, val in f.items():
       p = p.field(k, val)
+    points.append(p)
+  for t, code in model_points:
+    p = Point("model_rlog").time(t + offset, WritePrecision.NS).field("model_code", code)
+    for k, val in tags.items():
+      p = p.tag(k, val)
+    points.append(p)
+  if any(model_secs.values()):
+    p = Point("model_summary").time(first + offset, WritePrecision.NS)
+    for k, val in tags.items():
+      p = p.tag(k, val)
+    p = p.field("small_s", round(model_secs["small"], 2)).field("big_s", round(model_secs["big"], 2))
     points.append(p)
   faults = FaultTracker(tags, offset)
   run: list[int] = []  # frame times of the current unbroken stretch of the rack ignoring our torque request

@@ -30,8 +30,9 @@ OP_ALERTS = {
   "controlsMismatch", "canError", "canBusMissing", "steerUnavailable", "relayMalfunction", "vehicleSensorsInvalid",
   "steerSaturated", "steerTempUnavailableSilent",
 }
-# which driving model is running (sunnypilot forks with a Chestnut accelerator run a "big" model on it, falling back to
-# the device's own "small" model): big while the Chestnut reports a live temperature, loading while it starts up
+# which driving model is running (sunnypilot forks run a "big" model on a Chestnut accelerator or an off-board Jetlink
+# host, falling back to the device's own "small" model): big while the Chestnut reports a live temperature or
+# drivingModelData says it is big, loading while the big model starts up
 MODEL_CODES = {"small": 0, "loading": 1, "big": 2}
 CHESTNUT_STALE_NS = 3e9  # chestnutState is 1 Hz in qlogs
 

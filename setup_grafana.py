@@ -266,7 +266,7 @@ DESCRIPTIONS = {
       "- openpilot system alerts\n\n"
       "Only while in drive; startup noise is filtered out.",
   5: "The selected drive over time, one row each:\n\n"
-     "- **model**: which driving model ran (the device's own small model, or the Chestnut's big one)\n"
+     "- **model**: which driving model ran (the device's own small model, or the big one on a Chestnut or Jetlink host)\n"
      "- **mode**: the openpilot mode\n"
      "- **driver attention**: from the driver-monitoring camera (distracted, no face seen), and its alerts as the "
      "device shows them: Pay Attention or Touch Steering Wheel, level 1 (white), 2 (orange) and 3 (red)\n"
@@ -780,7 +780,7 @@ def build_dashboard() -> dict:
                          START_COLUMN, ROUTE_LINK,
                          {"matcher": {"id": "byName", "options": "model"},
                           "properties": [{"id": "displayName", "value": "Model"}, {"id": "noValue", "value": "–"},
-                                         {"id": "description", "value": "Driving model. (big) = the Chestnut's model; a % means it fell back to the device's own model partway"}]},
+                                         {"id": "description", "value": "Driving model. (big) = the big model on a Chestnut or Jetlink host; a % means it fell back to the device's own model partway"}]},
                          {"matcher": {"id": "byName", "options": "version"}, "properties": [{"id": "displayName", "value": "Version"}]},
                          {"matcher": {"id": "byName", "options": "branch"}, "properties": [{"id": "displayName", "value": "Branch"}]},
                          {"matcher": {"id": "byName", "options": "commit"}, "properties": [{"id": "displayName", "value": "Commit"}]},
@@ -837,7 +837,7 @@ def build_dashboard() -> dict:
           transformations=[{"id": "organize", "options": {"indexByName": {"model": 0, "openpilot": 1, "device": 2, "big": 3, "car": 4}}}],
           description="This drive, from the car coming on (the comma starting to log) until it could engage:\n\n"
                       "- **grey**: openpilot starting up\n"
-                      "- **purple / orange**: waiting for the first driving-model output, from the Chestnut's big model (purple) or the "
+                      "- **purple / orange**: waiting for the first driving-model output, from the big model on a Chestnut or Jetlink host (purple) or the "
                       "device's own (orange, also after a failed big-model load). Nothing drives while the big model loads.\n"
                       "- **yellow**: waiting on the car (in park or reverse, door open, seatbelt off...) until openpilot first said it "
                       "could be engaged",
@@ -847,7 +847,7 @@ def build_dashboard() -> dict:
                          {"matcher": {"id": "byName", "options": "openpilot"},
                           "properties": [{"id": "displayName", "value": "openpilot starting"}, {"id": "color", "value": {"mode": "fixed", "fixedColor": "#8e8e8e"}}]},
                          {"matcher": {"id": "byName", "options": "big"},
-                          "properties": [{"id": "displayName", "value": "big model (Chestnut)"}, {"id": "color", "value": {"mode": "fixed", "fixedColor": "#B877D9"}},
+                          "properties": [{"id": "displayName", "value": "big model (Chestnut/Jetlink)"}, {"id": "color", "value": {"mode": "fixed", "fixedColor": "#B877D9"}},
                                          {"id": "noValue", "value": ""}]},
                          {"matcher": {"id": "byName", "options": "device"},
                           "properties": [{"id": "displayName", "value": "device model"}, {"id": "color", "value": {"mode": "fixed", "fixedColor": "#FF9830"}}]},
@@ -907,7 +907,7 @@ def build_dashboard() -> dict:
                   '  |> last()\n  |> group()\n  |> pivot(rowKey: ["route"], columnKey: ["_field"], valueColumn: "_value")\n'
                   '  |> findRecord(fn: (key) => true, idx: 0)\n'
                   'small = if exists names.model_small and names.model_small != "" then names.model_small else "device model"\n'
-                  'big = if exists names.model_big and names.model_big != "" then names.model_big else "Chestnut model"\n' +
+                  'big = if exists names.model_big and names.model_big != "" then names.model_big else "big model"\n' +
                   src("drive", ' and r.route == "${route}" and r._field == "model_code"') +
                   '  |> aggregateWindow(every: v.windowPeriod, fn: last, createEmpty: false)\n'
                   '  |> map(fn: (r) => ({_time: r._time, _field: "model",\n'
@@ -1402,10 +1402,10 @@ def build_dashboard() -> dict:
                   '  |> filter(fn: (r) => r._measurement == "route" and (r._field == "model_big" or r._field == "model_small"))\n'
                   '  |> group(columns: ["_field"])\n  |> last()\n'
                   '  |> map(fn: (r) => ({_value: if r._value == "" then "none" else r._value,\n'
-                  '      name: if r._field == "model_big" then "Chestnut" else "device"}))\n'
+                  '      name: if r._field == "model_big" then "big model" else "device"}))\n'
                   '  |> group(columns: ["name"])')],
           description="The driving models selected in sunnypilot's model manager on the newest drive: the big model "
-                      "run on the Chestnut accelerator, and the device's own model.",
+                      "run on a Chestnut accelerator or an off-board Jetlink host, and the device's own model.",
           fieldConfig={"defaults": {"displayName": "${__field.labels.name}", "color": {"mode": "fixed", "fixedColor": "text"}},
                        "overrides": []},
           options={**stat_opts, "colorMode": "none", "textMode": "value_and_name", "orientation": "horizontal",

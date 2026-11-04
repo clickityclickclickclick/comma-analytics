@@ -45,6 +45,16 @@ def replace_qlog_engagements(route: str, span: tuple[int, int] | None) -> None:
     DELETE.delete(start, stop, pred, bucket=ENV["INFLUX_BUCKET"], org=ENV["INFLUX_ORG"])
 
 
+def replace_qlog_model(route: str, span: tuple[int, int] | None) -> None:
+  """The rlog's modelV2 says which model drove each moment; drop the qlog's summary for its span before writing it."""
+  if not span or DELETE is None:
+    return
+  start = dt.datetime.fromtimestamp(span[0] / 1e9, dt.UTC)
+  stop = dt.datetime.fromtimestamp(span[1] / 1e9 + 0.001, dt.UTC)
+  for measurement in ("model_summary", "model_rlog"):
+    DELETE.delete(start, stop, f'_measurement="{measurement}" AND route="{route}"', bucket=ENV["INFLUX_BUCKET"], org=ENV["INFLUX_ORG"])
+
+
 def stitch_faults(write, tags: dict, names=STITCHED) -> None:
   """Each rlog segment is decoded alone, so a fault running across segments is stored once per segment: rewrite the
   route's intervals of these faults with neighbours closer than the fault's merge gap joined into one."""
@@ -251,6 +261,8 @@ def ingest_rlogs(write, state, changes, limit: int | None = 30) -> int:
         continue
       if points:
         replace_qlog_engagements(tags["route"], summary.get("span"))
+        if summary.get("has_model"):
+          replace_qlog_model(tags["route"], summary.get("span"))
         write.write(ENV["INFLUX_BUCKET"], ENV["INFLUX_ORG"], points)
       done.add(seg)
       new.append(seg)
