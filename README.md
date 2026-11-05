@@ -32,6 +32,9 @@ Home Assistant names them: see *driver names* under Setup):
   locationd/paramsd errors, ...). Startup noise is filtered out.
 - **Driving model:** which model drove each moment and per drive, by name, from sunnypilot's model manager. With a
   Chestnut accelerator or an off-board Jetlink host this covers the big model, its loading and any fallback to the device's own model.
+  Names come from the models picked in the device's model settings when the drive starts. With none picked the
+  device runs the models built into the software and the dashboard shows only "device model" or "big model". Pick
+  both models in the model settings, and pick them again after a software update, which can clear them.
 - **Time to ready:** from the car coming on to openpilot running and then to the first driving-model output,
   coloured by which model came up (the big model on a Chestnut or Jetlink host, or the device's own).
 - **Engagements:** every disengagement with what ended it (brake, stalk cancel, the car dropping ACC, an openpilot
