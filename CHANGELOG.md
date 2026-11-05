@@ -3,6 +3,15 @@
 What changed in each update, newest first. To update, run
 `git pull && docker compose up -d --build`.
 
+## 2026-11-05
+
+### Fixed
+
+- Model time read from a drive's rlog (added 2026-11-03) is no longer counted twice on some minutes. The qlog's
+  model summary could sit a few milliseconds outside the rlog's span and survive the replace, or be written again
+  when the qlog arrived after the rlog (a late cloud upload); a minute whose rlog has given its model time now keeps
+  only that one. Drives already counted twice are put right by re-importing them (`sync.py --reload`, as below).
+
 ## 2026-11-03
 
 **After updating:** new drives show the big model once the comma records `drivingModelData.big` (companion
@@ -20,9 +29,6 @@ docker compose start sync
 - Drives that ran the big model through an off-board **Jetlink** host are now shown as big-model drives. The
   detector looked only at `chestnutState` and `drivingModelData.big`, which older Jetlink builds leave empty; it now
   also recovers the model from `modelV2.big` in the full rlog when the device copy has it.
-- Re-importing a drive's rlog no longer counts its model time twice on some minutes (the qlog's model summary
-  could sit a few milliseconds outside the rlog's span and survive the replace), nor when the qlog arrives after
-  the rlog (a late cloud upload): a minute whose rlog has given its model time keeps that one.
 
 ### Changed
 
