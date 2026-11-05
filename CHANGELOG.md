@@ -20,6 +20,8 @@ docker compose start sync
 - Drives that ran the big model through an off-board **Jetlink** host are now shown as big-model drives. The
   detector looked only at `chestnutState` and `drivingModelData.big`, which older Jetlink builds leave empty; it now
   also recovers the model from `modelV2.big` in the full rlog when the device copy has it.
+- Re-importing a drive's rlog no longer counts its model time twice on some minutes (the qlog's model summary
+  could sit a few milliseconds outside the rlog's span and survive the replace).
 
 ### Changed
 

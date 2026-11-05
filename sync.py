@@ -46,12 +46,15 @@ def replace_qlog_engagements(route: str, span: tuple[int, int] | None) -> None:
 
 
 def replace_qlog_model(route: str, span: tuple[int, int] | None) -> None:
-  """The rlog's modelV2 says which model drove each moment; drop the qlog's summary for its span before writing it."""
+  """The rlog's modelV2 says which model drove each moment; drop the qlog's summary for its span before writing it.
+  The qlog and rlog each set their clock from their own first GPS fix, so the qlog's model_summary can sit a few ms
+  before the rlog's span[0]: start that delete a second early (segments are 60 s apart, so the previous segment's
+  summary is safe). model_rlog keeps the exact span, since the previous segment's last frames can fall in that second."""
   if not span or DELETE is None:
     return
-  start = dt.datetime.fromtimestamp(span[0] / 1e9, dt.UTC)
   stop = dt.datetime.fromtimestamp(span[1] / 1e9 + 0.001, dt.UTC)
-  for measurement in ("model_summary", "model_rlog"):
+  for measurement, pad_s in (("model_summary", 1.0), ("model_rlog", 0.0)):
+    start = dt.datetime.fromtimestamp(span[0] / 1e9 - pad_s, dt.UTC)
     DELETE.delete(start, stop, f'_measurement="{measurement}" AND route="{route}"', bucket=ENV["INFLUX_BUCKET"], org=ENV["INFLUX_ORG"])
 
 
