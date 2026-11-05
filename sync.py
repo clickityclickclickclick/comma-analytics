@@ -58,6 +58,11 @@ def replace_qlog_model(route: str, span: tuple[int, int] | None) -> None:
     DELETE.delete(start, stop, f'_measurement="{measurement}" AND route="{route}"', bucket=ENV["INFLUX_BUCKET"], org=ENV["INFLUX_ORG"])
 
 
+def rlog_model(state, name: str) -> set[int]:
+  """Segments of route `name` whose model time came from the rlog (see replace_qlog_model)."""
+  return set(state.get("rlog_model", {}).get(name, []))
+
+
 def stitch_faults(write, tags: dict, names=STITCHED) -> None:
   """Each rlog segment is decoded alone, so a fault running across segments is stored once per segment: rewrite the
   route's intervals of these faults with neighbours closer than the fault's merge gap joined into one."""
@@ -147,7 +152,9 @@ def delete_route(client: InfluxDBClient, route: dict) -> None:
                              bucket=ENV["INFLUX_BUCKET"], org=ENV["INFLUX_ORG"])
 
 
-def ingest_route(client, write, route: dict, segs: list[int], done: set[int], changes) -> int:
+def ingest_route(client, write, route: dict, segs: list[int], done: set[int], changes,
+                 rlog_model: set[int] = frozenset()) -> int:
+  """`rlog_model`: segments whose model time already came from the rlog, so the qlog's isn't written as well."""
   driver = driver_at(changes, route["start_time_utc_millis"] / 1000)
   tags = route_tags(route, driver)
   n = 0
@@ -160,7 +167,7 @@ def ingest_route(client, write, route: dict, segs: list[int], done: set[int], ch
       continue
     path = route_dir(route["fullname"]) / f"{seg}.qlog.zst"
     try:
-      points, summary, seg_info = extract_segment(path, tags, segment_start_ns(route, seg))
+      points, summary, seg_info = extract_segment(path, tags, segment_start_ns(route, seg), seg not in rlog_model)
     except Exception as e:  # truncated/corrupt qlog (e.g. upload cut off): skip it, retried next pass
       log(f"{route['fullname']} seg {seg}: unreadable qlog, skipped ({str(e).splitlines()[0]})")
       continue
@@ -225,7 +232,7 @@ def ingest_device(write, state, changes) -> None:
     done = set(state["loaded"].get(name, []))
     if r.get("source") == "device":
       r["log_metres"] = r.get("log_metres", 0.0) if done else 0.0
-    n = ingest_route(None, write, r, segs, done, changes)
+    n = ingest_route(None, write, r, segs, done, changes, rlog_model(state, name))
     if r.get("source") == "device":
       (route_dir(name) / "route.json").write_text(json.dumps(r, indent=1))
     state["loaded"][name] = sorted(done)
@@ -266,6 +273,9 @@ def ingest_rlogs(write, state, changes, limit: int | None = 30) -> int:
         replace_qlog_engagements(tags["route"], summary.get("span"))
         if summary.get("has_model"):
           replace_qlog_model(tags["route"], summary.get("span"))
+          # a qlog read after this (a late cloud upload) must not write its model time again
+          models = state.setdefault("rlog_model", {})
+          models[name] = sorted(set(models.get(name, [])) | {seg})
         write.write(ENV["INFLUX_BUCKET"], ENV["INFLUX_ORG"], points)
       done.add(seg)
       new.append(seg)
@@ -332,7 +342,7 @@ def cloud_pull(write, state, changes, days: float) -> int:
       continue
     done = set(state["loaded"].get(name, []))
     # always rewrite the route summary: comma fills in distance/duration after the upload finishes
-    n = ingest_route(None, write, r, segs, done, changes)
+    n = ingest_route(None, write, r, segs, done, changes, rlog_model(state, name))
     state["loaded"][name] = sorted(done)
     save_state(state)
     if n:
@@ -424,6 +434,7 @@ def main() -> int:
         delete_route(client, r)
         state["loaded"].pop(r["fullname"], None)
         state.get("rlog_loaded", {}).pop(r["fullname"], None)  # braking data goes too; re-ingested by the daemon
+        state.get("rlog_model", {}).pop(r["fullname"], None)  # and the rlog's model time with it
         segs = sorted(int(p.name.split(".")[0]) for p in route_dir(r["fullname"]).glob("*.qlog.zst"))
         done: set[int] = set()
         if r.get("source") == "device":

@@ -117,7 +117,9 @@ def read_events(path):
   return _log.Event.read_multiple_bytes(data)
 
 
-def extract_segment(path, tags: dict, fallback_start_ns: int | None) -> tuple[list[Point], dict, dict]:
+def extract_segment(path, tags: dict, fallback_start_ns: int | None,
+                    model_summary: bool = True) -> tuple[list[Point], dict, dict]:
+  """`model_summary`: False once this segment's rlog has given its model time, which is better than the qlog's."""
   msgs = list(read_events(path))
   if not msgs:
     return [], {}, {}
@@ -439,7 +441,7 @@ def extract_segment(path, tags: dict, fallback_start_ns: int | None) -> tuple[li
     points.append(pt("dm_summary", seg_start).field("steered_s", round(dm_sum["steered_s"], 2))
                   .field("distracted_s", round(dm_sum["distracted_s"], 2)).field("warnings", dm_sum["warnings"])
                   .field("max_level", dm_sum["max_level"]))
-  if any(model_secs.values()):
+  if model_summary and any(model_secs.values()):
     points.append(pt("model_summary", seg_start).field("small_s", round(model_secs["small"], 2))
                   .field("big_s", round(model_secs["big"], 2)))
   return points, summary, info

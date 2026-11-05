@@ -21,7 +21,8 @@ docker compose start sync
   detector looked only at `chestnutState` and `drivingModelData.big`, which older Jetlink builds leave empty; it now
   also recovers the model from `modelV2.big` in the full rlog when the device copy has it.
 - Re-importing a drive's rlog no longer counts its model time twice on some minutes (the qlog's model summary
-  could sit a few milliseconds outside the rlog's span and survive the replace).
+  could sit a few milliseconds outside the rlog's span and survive the replace), nor when the qlog arrives after
+  the rlog (a late cloud upload): a minute whose rlog has given its model time keeps that one.
 
 ### Changed
 
