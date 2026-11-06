@@ -3,6 +3,23 @@
 What changed in each update, newest first. To update, run
 `git pull && docker compose up -d --build`.
 
+## 2026-11-06
+
+**After updating:** only matters if you drive with a Jetlink host. Drives whose rlogs were read before this update
+still show the device model in the Mode timeline's "model" row; re-import them (`sync.py --reload`, as under
+2026-11-03) to fix it.
+
+### Fixed
+
+- The "model" row of the **Mode timeline** panel now uses the model read from the rlog as well as the qlog, so a
+  Jetlink drive shows its big model there too, not only in the model totals. The rlog import now records which
+  model is driving once a second rather than only when it changes.
+
+### Note
+
+- A Jetlink host's big model is only known from the full rlog (see 2026-11-03), so a Jetlink drive whose rlogs never
+  reach the server (no device copy) shows as the device model. Chestnut drives are unaffected.
+
 ## 2026-11-05
 
 ### Fixed
@@ -14,9 +31,9 @@ What changed in each update, newest first. To update, run
 
 ## 2026-11-03
 
-**After updating:** new drives show the big model once the comma records `drivingModelData.big` (companion
-AdventurePilot fix). Drives recorded before that fix don't carry the flag in their qlogs; if the full rlog was
-copied off the device, re-import them to recover the model from `modelV2.big`:
+**After updating:** a Jetlink host's big model is read from the full rlog (`modelV2.big`). With a model picked on the
+device, sunnypilot's `modeld_v2` doesn't put the big-model flag in the qlog, so the rlog is the only place it shows.
+If the full rlogs were copied off the device, re-import the drives you already have to recover it:
 
 ```sh
 docker compose stop sync
@@ -27,8 +44,8 @@ docker compose start sync
 ### Fixed
 
 - Drives that ran the big model through an off-board **Jetlink** host are now shown as big-model drives. The
-  detector looked only at `chestnutState` and `drivingModelData.big`, which older Jetlink builds leave empty; it now
-  also recovers the model from `modelV2.big` in the full rlog when the device copy has it.
+  detector looked only at `chestnutState` and `drivingModelData.big`, which `modeld_v2` leaves empty on a Jetlink
+  setup; it now also recovers the model from `modelV2.big` in the full rlog when the device copy has it.
 
 ### Changed
 

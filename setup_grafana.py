@@ -908,10 +908,18 @@ def build_dashboard() -> dict:
                   '  |> findRecord(fn: (key) => true, idx: 0)\n'
                   'small = if exists names.model_small and names.model_small != "" then names.model_small else "device model"\n'
                   'big = if exists names.model_big and names.model_big != "" then names.model_big else "big model"\n' +
-                  src("drive", ' and r.route == "${route}" and r._field == "model_code"') +
+                  # from the qlog, and from the rlog where it was copied: the rlog's modelV2 knows a Jetlink big model the
+                  # qlog can't see. Each window takes the higher of the two, so big from either wins and loading still shows
+                  'qlog = ' + src("drive", ' and r.route == "${route}" and r._field == "model_code"').lstrip() +
+                  '  |> keep(columns: ["_start", "_stop", "_time", "_value"])\n  |> group()\n  |> sort(columns: ["_time"])\n'
                   '  |> aggregateWindow(every: v.windowPeriod, fn: last, createEmpty: false)\n'
+                  'rlog = ' + src("model_rlog", ' and r.route == "${route}" and r._field == "model_code"').lstrip() +
+                  '  |> keep(columns: ["_start", "_stop", "_time", "_value"])\n  |> group()\n  |> sort(columns: ["_time"])\n'
+                  '  |> aggregateWindow(every: v.windowPeriod, fn: last, createEmpty: false)\n'
+                  'union(tables: [qlog, rlog])\n  |> group(columns: ["_time"])\n  |> max()\n  |> group()\n  |> sort(columns: ["_time"])\n'
                   '  |> map(fn: (r) => ({_time: r._time, _field: "model",\n'
-                  '      _value: if r._value == 2 then big + " (big)" else if r._value == 1 then "loading big model" else small + " (small)"}))', "E"),
+                  '      _value: if r._value == 2 then big + " (big)" else if r._value == 1 then "loading big model" else small + " (small)"}))\n'
+                  '  |> group(columns: ["_field"])', "E"),
            # lane-line confidence while moving, as a colour strip; windows of at least 5 s so it doesn't flicker, empty
            # windows (stopped, or no data) stay blank
            target('every = if int(v: v.windowPeriod) < int(v: 5s) then 5s else v.windowPeriod\n' +

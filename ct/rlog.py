@@ -48,6 +48,7 @@ DECEL = -0.3          # m/s²: slower than this counts as braking
 PRESSURE = 1.0        # bar of master-cylinder pressure = friction brakes working
 MOVING_KPH = 3.0
 LANE_EVERY_NS = 0.09e9  # position in lane at ~10 Hz (the model runs at 20)
+MODEL_EVERY_NS = 1e9  # which model is driving, once a second as well as at each change, so the drive's model strip has it
 
 
 def decel_source(v: dict) -> str:
@@ -70,7 +71,7 @@ def extract_rlog(path, tags: dict, fallback_start_ns: int | None) -> tuple[list[
   eps: list[tuple[int, bool, bool, bool]] = []  # (t, ToiFlt, other EPS fault, torque requested but not applied)
   eac_fault = False
   lat_active, in_drive, act_toi = False, False, False
-  model_points: list[tuple[int, int]] = []  # (t, model code) at each change
+  model_points: list[tuple[int, int]] = []  # (t, model code) at each change and every MODEL_EVERY_NS
   model_secs = {"small": 0.0, "big": 0.0}
   prev_model: tuple[int, int] | None = None
   first = None
@@ -132,7 +133,7 @@ def extract_rlog(path, tags: dict, fallback_start_ns: int | None) -> tuple[list[
       code = MODEL_CODES["big" if m.modelV2.big else "small"]
       if prev_model is not None and code == prev_model[1]:
         model_secs["big" if code == MODEL_CODES["big"] else "small"] += min((t - prev_model[0]) / 1e9, 1.0)
-      else:
+      if prev_model is None or code != prev_model[1] or t - model_points[-1][0] >= MODEL_EVERY_NS:
         model_points.append((t, code))
       prev_model = (t, code)
     elif w == "sendcan":
