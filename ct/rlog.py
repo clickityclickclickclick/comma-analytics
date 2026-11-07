@@ -40,6 +40,8 @@ IGNORE_MIN_NS = 0.3e9
 # the driver's stalk, as the VDM reports it on bus 0: pushed up (1, 2) = cancel
 _VDM_ADAS = _db.get_message_by_name("VDM_AdasSts")
 STALK_UP = (1, 2)
+# the steering wheel's capacitive touch sensor (rlog only: the qlog keeps almost none of these frames)
+_WHEEL_TOUCH = _db.get_message_by_name("SCCM_WheelTouch")
 CAUSE_WINDOW_NS = 1.0e9  # a stalk push / openpilot cancel this long before the end caused it
 
 # numeric so a time window can take the max: friction beats regen beats nothing
@@ -82,6 +84,9 @@ def extract_rlog(path, tags: dict, fallback_start_ns: int | None) -> tuple[list[
   engaged = None
   v_ego, brake_t, stalk_up_t, op_cancel_t = 0.0, 0, 0, 0
   disables: list[tuple[int, str, str]] = []
+  # seconds moving in a forward gear, and of those with hands on the wheel; the same while openpilot steered
+  hands = {"drive_s": 0.0, "hands_s": 0.0, "steer_s": 0.0, "steer_hands_s": 0.0}
+  touch_t = None
 
   def rlog_cause(t: int) -> str:
     alert = alert_cause(disables, t)
@@ -145,6 +150,16 @@ def extract_rlog(path, tags: dict, fallback_start_ns: int | None) -> tuple[list[
         if c.src == 0 and c.address == _VDM_ADAS.frame_id:
           if _VDM_ADAS.decode(bytes(c.dat), decode_choices=False)["VDM_UserAdasRequest"] in STALK_UP:
             stalk_up_t = t
+        elif c.src == 0 and c.address == _WHEEL_TOUCH.frame_id:
+          on = _WHEEL_TOUCH.decode(bytes(c.dat), decode_choices=False)["SCCM_WheelTouch_HandsOn"] == 1
+          dt = min((t - touch_t) / 1e9, 1.0) if touch_t is not None else 0.0
+          touch_t = t
+          if in_drive and v_ego * 3.6 > MOVING_KPH:
+            hands["drive_s"] += dt
+            hands["hands_s"] += dt * on
+            if lat_active:
+              hands["steer_s"] += dt
+              hands["steer_hands_s"] += dt * on
         elif c.src == 0 and c.address == _EPS_ADAS.frame_id:
           eac_fault = _EPS_ADAS.decode(bytes(c.dat), decode_choices=False)["EPAS_EacStatus"] == EAC_FAULT
         elif c.src == 0 and c.address == _EPS_STATUS.frame_id:
@@ -234,5 +249,10 @@ def extract_rlog(path, tags: dict, fallback_start_ns: int | None) -> tuple[list[
     for k, val in summary.items():
       s = s.field(k, round(val, 3))
     points.append(s)
+  if hands["drive_s"] > 0:
+    h = pt("hands_summary", first)
+    for k, val in hands.items():
+      h = h.field(k, round(val, 2))
+    points.append(h)
   summary["span"] = (first + offset, last + offset) if first is not None else None
   return points, summary

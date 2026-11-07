@@ -3,6 +3,19 @@
 What changed in each update, newest first. To update, run
 `git pull && docker compose up -d --build`.
 
+## 2026-11-07
+
+**After updating:** the new panel only counts drives whose rlogs are read after this update. To fill it in for
+older drives, re-import them (`sync.py --reload all`, as under 2026-11-03).
+
+### Added
+
+- **Hands on wheel by driver** chart next to **Miles by driver**: for each driver over the last 30 days, the
+  hours driven and the share with hands on the steering wheel, the share openpilot steered and the share of
+  that with hands on (the rest was hands-off). It reads the car's capacitive wheel-touch sensor (not openpilot's
+  "steering pressed", which only notices you pushing on the wheel), so it's Rivian only and needs full logs (rlogs)
+  from the device copy. **Miles by driver** is narrower to make room.
+
 ## 2026-11-06
 
 **After updating:** only matters if you drive with a Jetlink host. Drives whose rlogs were read before this update
