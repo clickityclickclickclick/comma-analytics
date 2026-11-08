@@ -5,8 +5,18 @@ What changed in each update, newest first. To update, run
 
 ## 2026-11-07
 
-**After updating:** the new panel only counts drives whose rlogs are read after this update. To fill it in for
-older drives, re-import them (`sync.py --reload all`, as under 2026-11-03).
+**After updating:** the new chart only counts drives whose full logs (rlogs) are read after this update, so it
+starts out empty or nearly so. To fill it in for the drives you already have, re-import them:
+
+```sh
+docker compose stop sync
+docker compose run --rm sync python sync.py --reload all
+docker compose start sync
+```
+
+The quick logs come back in a few minutes; the full logs are then re-read in the background, about 1,000
+one-minute segments an hour, and the chart fills in as they go. Until that finishes, other rlog-based panels
+(braking, faults, lane detail) are incomplete too. This one re-import also covers the 2026-11-06 Jetlink fix.
 
 ### Added
 
