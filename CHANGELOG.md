@@ -5,10 +5,23 @@ What changed in each update, newest first. To update, run
 
 ## 2026-11-08
 
-**After updating:** on a Rivian, re-import your drives (`sync.py --reload all`, the three commands under 2026-11-07)
-so the **Hands on wheel by driver** chart is recounted the new way; until then, drives read before the update keep
-the old count. On another car there's nothing to run: the full logs (rlogs) already copied off the device are read
-in the background after the update.
+**After updating:**
+
+- **Rivian:** re-import your drives so **Hands on wheel by driver** is recounted the new way. Until you do, drives
+  read before the update keep the old count, with too much "Driver, hands off".
+
+  ```sh
+  docker compose stop sync
+  docker compose run --rm sync python sync.py --reload all
+  docker compose start sync
+  ```
+
+  The quick logs come back in about 15 minutes. The full logs are then re-read in the background, about 1,000
+  one-minute segments an hour (a few hours for a large archive), oldest first, so the 30-day chart fills in last.
+  Braking, faults and lane detail are incomplete until that finishes. If you skipped the re-import for 2026-11-07,
+  this one covers it too.
+- **Other cars:** nothing to run. Full logs (rlogs) already copied off the device are read in the background after
+  the update, which gives Jetlink drives their big model.
 
 ### Fixed
 
