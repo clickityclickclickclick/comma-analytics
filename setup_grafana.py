@@ -573,46 +573,45 @@ def build_dashboard() -> dict:
           fieldConfig={"defaults": {"unit": DIST, "decimals": 1}, "overrides": mode_overrides("name")},
           options={"orientation": "horizontal", "stacking": "normal", "xField": "driver", "showValue": "never",
                    "legend": {"displayMode": "list", "placement": "bottom"}}),
-    # the wheel's capacitive touch sensor, from rlogs only (ct.rlog: hands_summary), a group of bars per driver
+    # the wheel's capacitive touch sensor, from rlogs only (ct.rlog: hands_summary): one bar per driver, like the miles
+    # beside it, split into four parts of the driving time that add up to 100% (a_..d_: Flux orders the columns by name)
     panel(42, "Hands on wheel by driver", "barchart", 10, 15, 6, 7,
           [target('import "math"\n' + src("hands_summary") + DRIVER_FILTER +
                   '  |> group(columns: ["driver", "_field"])\n  |> sum()\n  |> group()\n'
                   '  |> pivot(rowKey: ["driver"], columnKey: ["_field"], valueColumn: "_value")\n'
+                  '  |> filter(fn: (r) => r.drive_s > 0.0)\n'
                   '  |> sort(columns: ["drive_s"], desc: true)\n'
                   # the hours it's based on go in the driver's label: one axis, percentages only
                   '  |> map(fn: (r) => ({driver: r.driver + " (" + string(v: math.round(x: r.drive_s / 360.0) / 10.0) + " h)",\n'
-                  '      hands: if r.drive_s > 0.0 then 100.0 * r.hands_s / r.drive_s else 0.0,\n'
-                  '      op: if r.drive_s > 0.0 then 100.0 * r.steer_s / r.drive_s else 0.0,\n'
-                  '      op_hands: if r.steer_s > 0.0 then 100.0 * r.steer_hands_s / r.steer_s else 0.0}))')],
-          description=f"Share of each driver's driving time over the last {OVERVIEW_DAYS} days with hands on the steering wheel, from the wheel's own touch "
-                      "sensor.\n\n"
+                  '      a_op_on: 100.0 * r.steer_hands_s / r.drive_s,\n'
+                  '      b_op_off: 100.0 * (r.steer_s - r.steer_hands_s) / r.drive_s,\n'
+                  '      c_me_on: 100.0 * (r.hands_s - r.steer_hands_s) / r.drive_s,\n'
+                  '      d_me_off: 100.0 * (r.drive_s - r.steer_s - r.hands_s + r.steer_hands_s) / r.drive_s}))')],
+          description=f"Each driver's driving time over the last {OVERVIEW_DAYS} days, split by who was steering and whether "
+                      "hands were on the steering wheel, from the wheel's own touch sensor. The parts add up to 100%; "
+                      "hover for the numbers.\n\n"
                       "- **h** after each name: hours driven (moving in a forward gear) on drives with full logs\n"
-                      "- **Hands on**: share of those hours with hands on the wheel\n"
-                      "- **openpilot steered**: share of those hours openpilot was steering (full, MADS or steer + "
-                      "stock ACC)\n"
-                      "- **Hands on while openpilot steered**: share of the openpilot time with hands on the wheel; "
-                      "the rest was hands-off\n\n"
+                      "- **openpilot, hands on** / **openpilot, hands off**: openpilot was steering (full, MADS or "
+                      "steer + stock ACC)\n"
+                      "- **Driver, hands on** / **Driver, hands off**: openpilot wasn't steering (hands off here is "
+                      "usually a brief moment, or a light touch the sensor missed)\n\n"
                       "Only drives with full logs (rlogs, copied off the comma on home Wi-Fi) have the touch sensor, so "
                       "drives without them aren't counted. This is the car's capacitive sensor, not openpilot's "
                       "\"steering pressed\", which only notices you pushing on the wheel.",
-          fieldConfig={"defaults": {"unit": "percent", "decimals": 0, "min": 0, "max": 100, "noValue": "no full logs",
-                                    # values are printed on the bars; the 0-100% axis only crowded the narrow panel
-                                    "custom": {"fillOpacity": 90, "lineWidth": 0, "axisPlacement": "hidden"}},
-                       # magenta / amber / teal: hues the mode colours don't use, so nothing reads as MADS or ACC;
-                       # checked for colour-blind separation and contrast on Grafana's dark theme
+          fieldConfig={"defaults": {"unit": "percent", "decimals": 0, "min": 0, "max": 100, "noValue": "no full logs"},
+                       # teal / magenta / amber: hues the mode colours don't use, so nothing reads as MADS or ACC;
+                       # checked for colour-blind separation and contrast on Grafana's dark theme. Hands-off while
+                       # openpilot steers is the one to notice, so it gets the strongest colour
                        "overrides": [{"matcher": {"id": "byName", "options": n},
                                       "properties": [{"id": "displayName", "value": label},
                                                      {"id": "color", "value": {"mode": "fixed", "fixedColor": colour}}]}
                                      for n, label, colour in (
-                                       ("hands", "Hands on", "#d55181"),
-                                       ("op", "openpilot steered", "#c98500"),
-                                       ("op_hands", "Hands on while openpilot steered", "#199e70"))] +
-                                    # the driver axis stays: it carries the name and hours
-                                    [{"matcher": {"id": "byName", "options": "driver"},
-                                      "properties": [{"id": "custom.axisPlacement", "value": "auto"}]}]},
-          options={"orientation": "horizontal", "xField": "driver", "stacking": "none", "showValue": "always",
-                   "groupWidth": 0.8, "barWidth": 0.9, "legend": {"displayMode": "list", "placement": "bottom"},
-                   "tooltip": {"mode": "multi"}}),
+                                       ("a_op_on", "openpilot, hands on", "#199e70"),
+                                       ("b_op_off", "openpilot, hands off", "#d55181"),
+                                       ("c_me_on", "Driver, hands on", "#c98500"),
+                                       ("d_me_off", "Driver, hands off", "#8e8e8e"))]},
+          options={"orientation": "horizontal", "stacking": "normal", "xField": "driver", "showValue": "never",
+                   "legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "multi"}}),
     # a typical day of the week: each weekday's distance over every such day since the first drive (0 when not driven)
     panel(38, f"Average {DIST_WORD.lower()} by day of the week (all drives)", "barchart", 0, 22, 24, 6,
           [target('import "array"\nimport "date"\n' + TZ + DAY_LABEL +

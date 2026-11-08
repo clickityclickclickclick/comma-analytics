@@ -1,6 +1,7 @@
 """Full-rate CAN from rlogs (device copies only): braking — regen vs friction, and EPS steering faults.
 
-Rivian R1 only: the signals come from the Rivian DBC. Other cars' rlogs are skipped (see BRANDS).
+The CAN signals come from the Rivian DBC, so they're read on a Rivian R1 only (see BRANDS). Other cars' rlogs give only
+which model drove (modelV2.big), which the qlog misses on a Jetlink host.
 
 The comma's harness doesn't see the motor-torque or wheel-pressure messages, so regen is inferred:
 the car is slowing (IMU) with no master-cylinder pressure → the motors are doing it.
@@ -63,8 +64,11 @@ def decel_source(v: dict) -> str:
   return ""
 
 
-def extract_rlog(path, tags: dict, fallback_start_ns: int | None) -> tuple[list[Point], dict]:
-  msgs = read_events(path)
+def extract_rlog(path, tags: dict, fallback_start_ns: int | None, brand: str | None = None) -> tuple[list[Point], dict]:
+  """`brand`: the route's, for a segment without carParams (card sends it every 50 s, so a 60 s segment has one)."""
+  msgs = list(read_events(path))
+  brand = next((m.carParams.brand for m in msgs if m.which() == "carParams"), brand)
+  rivian = brand is None or brand in BRANDS  # unknown: as before, read it as a Rivian
   offset = None
   cur: dict = {}
   rows: list[tuple[int, dict]] = []
@@ -110,8 +114,8 @@ def extract_rlog(path, tags: dict, fallback_start_ns: int | None) -> tuple[list[
       g = m.gpsLocationExternal
       if g.hasFix and g.unixTimestampMillis > 0:
         offset = g.unixTimestampMillis * 1_000_000 - t
-    elif w == "carParams" and m.carParams.brand not in BRANDS:
-      return [], {}
+    elif not rivian and w != "modelV2":
+      continue  # another car: only the model is read
     elif w == "carState":
       v_ego = m.carState.vEgo
       in_drive = str(m.carState.gearShifter) in FORWARD_GEARS
@@ -179,6 +183,21 @@ def extract_rlog(path, tags: dict, fallback_start_ns: int | None) -> tuple[list[
     if fallback_start_ns is None or first is None:
       return [], {}
     offset = fallback_start_ns - first
+
+  if not rivian:
+    points = []
+    for t, code in model_points:
+      p = Point("model_rlog").time(t + offset, WritePrecision.NS).field("model_code", code)
+      for k, val in tags.items():
+        p = p.tag(k, val)
+      points.append(p)
+    if any(model_secs.values()):
+      p = Point("model_summary").time(first + offset, WritePrecision.NS)
+      for k, val in tags.items():
+        p = p.tag(k, val)
+      points.append(p.field("small_s", round(model_secs["small"], 2)).field("big_s", round(model_secs["big"], 2)))
+    return points, {"has_model": bool(model_points), "model_only": True,
+                    "span": (first + offset, last + offset) if first is not None else None}
 
   points = []
   summary = {"regen_s": 0.0, "friction_s": 0.0, "hold_s": 0.0, "peak_regen": 0.0, "has_model": bool(model_points)}

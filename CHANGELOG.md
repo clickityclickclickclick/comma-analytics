@@ -3,6 +3,22 @@
 What changed in each update, newest first. To update, run
 `git pull && docker compose up -d --build`.
 
+## 2026-11-08
+
+**After updating:** nothing to run. On a car other than a Rivian, the full logs (rlogs) already copied off the
+device are read in the background after the update.
+
+### Fixed
+
+- A **Jetlink** host's big model is now recognised on every car, not only a Rivian. Reading the full logs (added
+  2026-11-03) skipped every other make, because the rest of what they give (braking, steering rack, wheel touch)
+  needs the Rivian's CAN messages; now only that part is Rivian-only.
+
+### Changed
+
+- **Hands on wheel by driver** is one bar per driver, like **Miles by driver**: the driving time split into
+  openpilot steering with hands on / hands off and the driver steering with hands on / hands off, adding up to 100%.
+
 ## 2026-11-07
 
 **After updating:** the new chart only counts drives whose full logs (rlogs) are read after this update, so it

@@ -23,7 +23,7 @@ from ct.config import ARCHIVE, ENV, load_state, save_state, secret
 from ct import device
 from ct.extract import extract_segment
 from ct.faults import FAULTS, FaultTracker
-from ct.rlog import BRANDS, extract_rlog
+from ct.rlog import extract_rlog
 from ct.safety import extract_alerts
 from ct.sources import (download_qlogs, driver_at, fork_name, github_status, list_routes, newest_software, route_dir,
                         sync_driver_history)
@@ -251,8 +251,6 @@ def ingest_rlogs(write, state, changes, limit: int | None = 30) -> int:
       continue  # route itself not ingested (e.g. no GPS fix)
     sw = meta.parent / "software.json"
     brand = json.loads(sw.read_text()).get("brand") if sw.exists() else None
-    if brand and brand not in BRANDS:
-      continue  # no DBC for this car
     r = json.loads(meta.read_text())
     tags = route_tags(r, driver_at(changes, r["start_time_utc_millis"] / 1000))
     done = set(loaded.get(name, []))
@@ -264,13 +262,14 @@ def ingest_rlogs(write, state, changes, limit: int | None = 30) -> int:
       if limit is not None and n_segs >= limit:
         break
       try:
-        points, summary = extract_rlog(device.DEVICE / f"{route}--{seg}" / "rlog.zst", tags, segment_start_ns(r, seg))
+        points, summary = extract_rlog(device.DEVICE / f"{route}--{seg}" / "rlog.zst", tags, segment_start_ns(r, seg), brand)
       except Exception as e:  # truncated/corrupt file: leave it for a later pass
         log(f"{name} seg {seg}: rlog decode failed: {e}")
         done.add(seg)
         continue
       if points:
-        replace_qlog_engagements(tags["route"], summary.get("span"))
+        if not summary.get("model_only"):  # another car's rlog says nothing about how engagements ended
+          replace_qlog_engagements(tags["route"], summary.get("span"))
         if summary.get("has_model"):
           replace_qlog_model(tags["route"], summary.get("span"))
           # a qlog read after this (a late cloud upload) must not write its model time again
