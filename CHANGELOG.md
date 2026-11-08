@@ -3,6 +3,116 @@
 What changed in each update, newest first. To update, run
 `git pull && docker compose up -d --build`.
 
+## 2026-11-08
+
+**After updating:**
+
+- **Rivian:** re-import your drives so **Hands on wheel by driver** is recounted the new way. Until you do, drives
+  read before the update keep the old count, with too much "Driver, hands off".
+
+  ```sh
+  docker compose stop sync
+  docker compose run --rm sync python sync.py --reload all
+  docker compose start sync
+  ```
+
+  The quick logs come back in about 15 minutes. The full logs are then re-read in the background, about 1,000
+  one-minute segments an hour (a few hours for a large archive), oldest first, so the 30-day chart fills in last.
+  Braking, faults and lane detail are incomplete until that finishes. Coming from before 2026-11-03? This one
+  re-import covers every entry since then (2026-11-03 to 2026-11-08); there's no need to run it once per entry.
+- **Other cars:** nothing to run. Full logs (rlogs) already copied off the device are read in the background after
+  the update, which gives Jetlink drives their big model.
+
+### Fixed
+
+- A **Jetlink** host's big model is now recognised on every car, not only a Rivian. Reading the full logs (added
+  2026-11-03) skipped every other make, because the rest of what they give (braking, steering rack, wheel touch)
+  needs the Rivian's CAN messages; now only that part is Rivian-only.
+
+### Changed
+
+- **Hands on wheel by driver** is one bar per driver, like **Miles by driver**: the driving time split into
+  openpilot steering with hands on / hands off and the driver steering with hands on / hands off, adding up to 100%.
+- **Hands on wheel by driver** no longer counts hands as off when the touch sensor briefly loses them. This is a
+  sensor artifact: it often loses hands that are on the wheel for a few seconds at a time, even while you're turning
+  it (seen with a light grip; gloves or where you hold the wheel may matter too), which showed as a lot of "Driver,
+  hands off". Turning the wheel now counts as hands on, and while you steer, hands stay
+  counted for 5 seconds after the sensor or a turn of the wheel last showed them (on one drive, driving yourself with
+  hands off went from 68% to 5%). While openpilot steers there's no such hold, so its hands-off share is never
+  understated.
+
+## 2026-11-07
+
+**After updating:** the new chart only counts drives whose full logs (rlogs) are read after this update, so it
+starts out empty or nearly so. To fill it in for the drives you already have, re-import them:
+
+```sh
+docker compose stop sync
+docker compose run --rm sync python sync.py --reload all
+docker compose start sync
+```
+
+The quick logs come back in a few minutes; the full logs are then re-read in the background, about 1,000
+one-minute segments an hour, and the chart fills in as they go. Until that finishes, other rlog-based panels
+(braking, faults, lane detail) are incomplete too. This one re-import also covers the 2026-11-06 Jetlink fix.
+
+### Added
+
+- **Hands on wheel by driver** chart next to **Miles by driver**: for each driver over the last 30 days, the
+  hours driven and the share with hands on the steering wheel, the share openpilot steered and the share of
+  that with hands on (the rest was hands-off). It reads the car's capacitive wheel-touch sensor (not openpilot's
+  "steering pressed", which only notices you pushing on the wheel), so it's Rivian only and needs full logs (rlogs)
+  from the device copy. **Miles by driver** is narrower to make room.
+
+## 2026-11-06
+
+**After updating:** only matters if you drive with a Jetlink host. Drives whose rlogs were read before this update
+still show the device model in the Mode timeline's "model" row; re-import them (`sync.py --reload`, as under
+2026-11-03) to fix it.
+
+### Fixed
+
+- The "model" row of the **Mode timeline** panel now uses the model read from the rlog as well as the qlog, so a
+  Jetlink drive shows its big model there too, not only in the model totals. The rlog import now records which
+  model is driving once a second rather than only when it changes.
+
+### Note
+
+- A Jetlink host's big model is only known from the full rlog (see 2026-11-03), so a Jetlink drive whose rlogs never
+  reach the server (no device copy) shows as the device model. Chestnut drives are unaffected.
+
+## 2026-11-05
+
+### Fixed
+
+- Model time read from a drive's rlog (added 2026-11-03) is no longer counted twice on some minutes. The qlog's
+  model summary could sit a few milliseconds outside the rlog's span and survive the replace, or be written again
+  when the qlog arrived after the rlog (a late cloud upload); a minute whose rlog has given its model time now keeps
+  only that one. Drives already counted twice are put right by re-importing them (`sync.py --reload`, as below).
+
+## 2026-11-03
+
+**After updating:** a Jetlink host's big model is read from the full rlog (`modelV2.big`). With a model picked on the
+device, sunnypilot's `modeld_v2` doesn't put the big-model flag in the qlog, so the rlog is the only place it shows.
+If the full rlogs were copied off the device, re-import the drives you already have to recover it:
+
+```sh
+docker compose stop sync
+docker compose run --rm sync python sync.py --reload all
+docker compose start sync
+```
+
+### Fixed
+
+- Drives that ran the big model through an off-board **Jetlink** host are now shown as big-model drives. The
+  detector looked only at `chestnutState` and `drivingModelData.big`, which `modeld_v2` leaves empty on a Jetlink
+  setup; it now also recovers the model from `modelV2.big` in the full rlog when the device copy has it.
+
+### Changed
+
+- The dashboard's model labels and descriptions name the big model's host as **Chestnut or Jetlink** rather than
+  Chestnut alone.
+
 ## 2026-11-02
 
 **After updating:** drives you already have won't show the new lane and steering data until you re-import them.

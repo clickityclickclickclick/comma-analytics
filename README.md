@@ -14,6 +14,13 @@ Home Assistant names them: see *driver names* under Setup):
 - **Drives table:** distance, time, share engaged, errors, collision alerts, engagements, driver attention, lane
   confidence, steering error and follow gap per drive.
 - **Software by drive:** the version, branch, commit, AGNOS and driving models each drive ran, to compare builds.
+- **Hands on wheel by driver** (Rivian, drives copied off the device): one bar per driver, like the miles beside
+  it, splitting the hours driven into openpilot steering with hands on / hands off and the driver steering with hands
+  on / hands off. It reads the car's capacitive wheel-touch sensor, so a light rest of the hands counts, not only
+  pushing on the wheel. Turning the wheel counts too. **Sensor artifact:** the sensor often loses hands that are on
+  the wheel for a few seconds at a time, even while the driver is turning it, so while the driver steers, hands stay
+  counted for 5 seconds after the sensor or a turn of the wheel last showed them. There's no such hold while
+  openpilot steers, so its hands-off share is never understated but can still include some dropouts.
 
 **Each drive:**
 
@@ -31,9 +38,12 @@ Home Assistant names them: see *driver names* under Setup):
   openpilot's torque (Rivian, drives copied off the device), CAN errors and openpilot system alerts (commIssue,
   locationd/paramsd errors, ...). Startup noise is filtered out.
 - **Driving model:** which model drove each moment and per drive, by name, from sunnypilot's model manager. With a
-  Chestnut accelerator this covers the big model, its loading and any fallback to the device's own model.
+  Chestnut accelerator or an off-board Jetlink host this covers the big model, its loading and any fallback to the device's own model.
+  Names come from the models picked in the device's model settings when the drive starts. With none picked the
+  device runs the models built into the software and the dashboard shows only "device model" or "big model". Pick
+  both models in the model settings, and pick them again after a software update, which can clear them.
 - **Time to ready:** from the car coming on to openpilot running and then to the first driving-model output,
-  coloured by which model came up (the Chestnut's big model or the device's own).
+  coloured by which model came up (the big model on a Chestnut or Jetlink host, or the device's own).
 - **Engagements:** every disengagement with what ended it (brake, stalk cancel, the car dropping ACC, an openpilot
   cancel or alert), and engagements that didn't stick (under 3 s, not ended by you) flagged as errors. The exact
   cause needs the full logs copied off the device (Rivian CAN); cloud-only drives show "cruise turned off".
@@ -93,7 +103,7 @@ has. Watch it with `docker compose logs -f sync`.
 | **time zone, units, port** | Defaults to this machine's time zone, imperial or metric to match it (US/UK → miles), and the first free port from 3000. Times are stored in UTC and shown in this time zone; distances are stored in miles and converted for display, so switching units later needs no re-import. |
 | InfluxDB / Grafana passwords and tokens | Generated for you, kept in `.env`. |
 | **driver names** (optional) | Without Home Assistant, every drive gets one name (`DRIVER_NAME`). With it, any HA sensor whose state is the current driver's name labels each drive. On a **Rivian**, that's the *Active Driver* sensor (`sensor.<vehicle>_active_driver`) from the [Rivian (Unofficial)](https://github.com/bretterer/home-assistant-rivian) integration (HACS), which reports the car's active driver profile; other cars need an integration with a similar sensor. You need the HA URL (as seen from docker: use the LAN IP, not `localhost`), a long-lived access token (HA → your profile → Security → *Long-lived access tokens*) and the sensor's entity id. HA only keeps ~10 days of history, so driver changes are saved locally as they're seen. |
-| **direct device copy** (optional) | Whenever the device is on your home Wi-Fi (car on or off), the sync copies the full logs (rlogs) of finished segments over SSH, checking every minute; the copy runs at idle priority on the device and resumes where it stopped. You need the device's LAN IP (give it a DHCP reservation) and an SSH key it trusts. The device trusts the keys on a GitHub account: setup makes a key in `secrets/comma_ssh_key`; add its `.pub` at <https://github.com/settings/keys>, then on the device enable SSH and add your GitHub username under SSH Keys. On a **Rivian R1** the rlogs also give regen-vs-friction braking, EPS fault detection, the rack's activity on the steering torque graph and position in lane at 10 Hz; for other cars you just get the local copy. |
+| **direct device copy** (optional) | Whenever the device is on your home Wi-Fi (car on or off), the sync copies the full logs (rlogs) of finished segments over SSH, checking every minute; the copy runs at idle priority on the device and resumes where it stopped. You need the device's LAN IP (give it a DHCP reservation) and an SSH key it trusts. The device trusts the keys on a GitHub account: setup makes a key in `secrets/comma_ssh_key`; add its `.pub` at <https://github.com/settings/keys>, then on the device enable SSH and add your GitHub username under SSH Keys. On any car the rlogs show when an off-board Jetlink host's big model was driving, which the quick logs miss. On a **Rivian R1** they also give regen-vs-friction braking, EPS fault detection, the rack's activity on the steering torque graph, position in lane at 10 Hz and the Hands on wheel chart. |
 
 `.env.example` documents every setting if you'd rather fill `.env` in by hand.
 
@@ -158,7 +168,7 @@ The event log's following uses Grafana internals, so check it after upgrading Gr
 - `ct/engage.py` works out when openpilot engaged and what ended each engagement.
 - `ct/faults.py` holds the error types, codes and severity.
 - `ct/safety.py` finds collision alerts and records the seconds around them.
-- `ct/rlog.py` decodes full-rate CAN from rlogs (Rivian).
+- `ct/rlog.py` decodes rlogs: the big-model flag on any car, and full-rate CAN on a Rivian (braking, rack activity, wheel touch).
 - `ct/device.py` handles the SSH copy off the device.
 - `ct/sources.py` talks to the comma API, Home Assistant and GitHub.
 - `schema/` holds openpilot's cereal capnp schema and the Rivian DBC. Their source is in `schema/SOURCE`.

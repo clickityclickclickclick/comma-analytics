@@ -1,6 +1,7 @@
 """Full-rate CAN from rlogs (device copies only): braking — regen vs friction, and EPS steering faults.
 
-Rivian R1 only: the signals come from the Rivian DBC. Other cars' rlogs are skipped (see BRANDS).
+The CAN signals come from the Rivian DBC, so they're read on a Rivian R1 only (see BRANDS). Other cars' rlogs give only
+which model drove (modelV2.big), which the qlog misses on a Jetlink host.
 
 The comma's harness doesn't see the motor-torque or wheel-pressure messages, so regen is inferred:
 the car is slowing (IMU) with no master-cylinder pressure → the motors are doing it.
@@ -9,7 +10,7 @@ import cantools
 from influxdb_client import Point, WritePrecision
 
 from .config import ROOT
-from .extract import FORWARD_GEARS, LanePosition, read_events
+from .extract import FORWARD_GEARS, MODEL_CODES, LanePosition, read_events
 from .engage import EngagementTracker, alert_cause
 from .faults import FaultTracker
 
@@ -40,6 +41,13 @@ IGNORE_MIN_NS = 0.3e9
 # the driver's stalk, as the VDM reports it on bus 0: pushed up (1, 2) = cancel
 _VDM_ADAS = _db.get_message_by_name("VDM_AdasSts")
 STALK_UP = (1, 2)
+# the steering wheel's capacitive touch sensor (rlog only: the qlog keeps almost none of these frames)
+_WHEEL_TOUCH = _db.get_message_by_name("SCCM_WheelTouch")
+# the touch sensor drops out for a few seconds at a time while the hands stay on (gloves, a light grip): while the
+# driver steers, hands count as on until this long after the sensor or a turn of the wheel last showed them (on one
+# drive the driver's false hands-off went from 68% to 5%). Not while openpilot steers: brief touches a few seconds
+# apart with the hands off in between are possible there, and the hold would count them as hands on throughout
+HANDS_HOLD_NS = 5e9
 CAUSE_WINDOW_NS = 1.0e9  # a stalk push / openpilot cancel this long before the end caused it
 
 # numeric so a time window can take the max: friction beats regen beats nothing
@@ -48,6 +56,7 @@ DECEL = -0.3          # m/s²: slower than this counts as braking
 PRESSURE = 1.0        # bar of master-cylinder pressure = friction brakes working
 MOVING_KPH = 3.0
 LANE_EVERY_NS = 0.09e9  # position in lane at ~10 Hz (the model runs at 20)
+MODEL_EVERY_NS = 1e9  # which model is driving, once a second as well as at each change, so the drive's model strip has it
 
 
 def decel_source(v: dict) -> str:
@@ -60,8 +69,11 @@ def decel_source(v: dict) -> str:
   return ""
 
 
-def extract_rlog(path, tags: dict, fallback_start_ns: int | None) -> tuple[list[Point], dict]:
-  msgs = read_events(path)
+def extract_rlog(path, tags: dict, fallback_start_ns: int | None, brand: str | None = None) -> tuple[list[Point], dict]:
+  """`brand`: the route's, for a segment without carParams (card sends it every 50 s, so a 60 s segment has one)."""
+  msgs = list(read_events(path))
+  brand = next((m.carParams.brand for m in msgs if m.which() == "carParams"), brand)
+  rivian = brand is None or brand in BRANDS  # unknown: as before, read it as a Rivian
   offset = None
   cur: dict = {}
   rows: list[tuple[int, dict]] = []
@@ -70,6 +82,9 @@ def extract_rlog(path, tags: dict, fallback_start_ns: int | None) -> tuple[list[
   eps: list[tuple[int, bool, bool, bool]] = []  # (t, ToiFlt, other EPS fault, torque requested but not applied)
   eac_fault = False
   lat_active, in_drive, act_toi = False, False, False
+  model_points: list[tuple[int, int]] = []  # (t, model code) at each change and every MODEL_EVERY_NS
+  model_secs = {"small": 0.0, "big": 0.0}
+  prev_model: tuple[int, int] | None = None
   first = None
   last = None
   last_emit = 0
@@ -78,6 +93,12 @@ def extract_rlog(path, tags: dict, fallback_start_ns: int | None) -> tuple[list[
   engaged = None
   v_ego, brake_t, stalk_up_t, op_cancel_t = 0.0, 0, 0, 0
   disables: list[tuple[int, str, str]] = []
+  # seconds moving in a forward gear, and of those with hands on the wheel; the same while openpilot steered
+  hands = {"drive_s": 0.0, "hands_s": 0.0, "steer_s": 0.0, "steer_hands_s": 0.0}
+  touch_t = None
+  # the driver turning the wheel (carState.steeringPressed, from the driver's torque) shows hands on as well
+  steer_pressed = False
+  hands_t = None  # last time the sensor or a turn of the wheel showed hands on
 
   def rlog_cause(t: int) -> str:
     alert = alert_cause(disables, t)
@@ -101,10 +122,11 @@ def extract_rlog(path, tags: dict, fallback_start_ns: int | None) -> tuple[list[
       g = m.gpsLocationExternal
       if g.hasFix and g.unixTimestampMillis > 0:
         offset = g.unixTimestampMillis * 1_000_000 - t
-    elif w == "carParams" and m.carParams.brand not in BRANDS:
-      return [], {}
+    elif not rivian and w != "modelV2":
+      continue  # another car: only the model is read
     elif w == "carState":
       v_ego = m.carState.vEgo
+      steer_pressed = m.carState.steeringPressed
       in_drive = str(m.carState.gearShifter) in FORWARD_GEARS
       if m.carState.brakePressed:
         brake_t = t
@@ -125,6 +147,13 @@ def extract_rlog(path, tags: dict, fallback_start_ns: int | None) -> tuple[list[
     elif w == "drivingModelData":
       if not lanes or t - lanes[-1][0] >= LANE_EVERY_NS:
         lanes.append((t, lane_pos.fields(m.drivingModelData)))
+    elif w == "modelV2":
+      code = MODEL_CODES["big" if m.modelV2.big else "small"]
+      if prev_model is not None and code == prev_model[1]:
+        model_secs["big" if code == MODEL_CODES["big"] else "small"] += min((t - prev_model[0]) / 1e9, 1.0)
+      if prev_model is None or code != prev_model[1] or t - model_points[-1][0] >= MODEL_EVERY_NS:
+        model_points.append((t, code))
+      prev_model = (t, code)
     elif w == "sendcan":
       for c in m.sendcan:
         if c.src == 0 and c.address == _LKA_CMD.frame_id:
@@ -134,6 +163,20 @@ def extract_rlog(path, tags: dict, fallback_start_ns: int | None) -> tuple[list[
         if c.src == 0 and c.address == _VDM_ADAS.frame_id:
           if _VDM_ADAS.decode(bytes(c.dat), decode_choices=False)["VDM_UserAdasRequest"] in STALK_UP:
             stalk_up_t = t
+        elif c.src == 0 and c.address == _WHEEL_TOUCH.frame_id:
+          on = _WHEEL_TOUCH.decode(bytes(c.dat), decode_choices=False)["SCCM_WheelTouch_HandsOn"] == 1 or steer_pressed
+          if on:
+            hands_t = t
+          elif not lat_active and hands_t is not None and t - hands_t < HANDS_HOLD_NS:
+            on = True
+          dt = min((t - touch_t) / 1e9, 1.0) if touch_t is not None else 0.0
+          touch_t = t
+          if in_drive and v_ego * 3.6 > MOVING_KPH:
+            hands["drive_s"] += dt
+            hands["hands_s"] += dt * on
+            if lat_active:
+              hands["steer_s"] += dt
+              hands["steer_hands_s"] += dt * on
         elif c.src == 0 and c.address == _EPS_ADAS.frame_id:
           eac_fault = _EPS_ADAS.decode(bytes(c.dat), decode_choices=False)["EPAS_EacStatus"] == EAC_FAULT
         elif c.src == 0 and c.address == _EPS_STATUS.frame_id:
@@ -154,8 +197,23 @@ def extract_rlog(path, tags: dict, fallback_start_ns: int | None) -> tuple[list[
       return [], {}
     offset = fallback_start_ns - first
 
+  if not rivian:
+    points = []
+    for t, code in model_points:
+      p = Point("model_rlog").time(t + offset, WritePrecision.NS).field("model_code", code)
+      for k, val in tags.items():
+        p = p.tag(k, val)
+      points.append(p)
+    if any(model_secs.values()):
+      p = Point("model_summary").time(first + offset, WritePrecision.NS)
+      for k, val in tags.items():
+        p = p.tag(k, val)
+      points.append(p.field("small_s", round(model_secs["small"], 2)).field("big_s", round(model_secs["big"], 2)))
+    return points, {"has_model": bool(model_points), "model_only": True,
+                    "span": (first + offset, last + offset) if first is not None else None}
+
   points = []
-  summary = {"regen_s": 0.0, "friction_s": 0.0, "hold_s": 0.0, "peak_regen": 0.0}
+  summary = {"regen_s": 0.0, "friction_s": 0.0, "hold_s": 0.0, "peak_regen": 0.0, "has_model": bool(model_points)}
   prev = None
   for t, v in rows:
     src = decel_source(v)
@@ -178,6 +236,17 @@ def extract_rlog(path, tags: dict, fallback_start_ns: int | None) -> tuple[list[
       p = p.tag(k, val)
     for k, val in f.items():
       p = p.field(k, val)
+    points.append(p)
+  for t, code in model_points:
+    p = Point("model_rlog").time(t + offset, WritePrecision.NS).field("model_code", code)
+    for k, val in tags.items():
+      p = p.tag(k, val)
+    points.append(p)
+  if any(model_secs.values()):
+    p = Point("model_summary").time(first + offset, WritePrecision.NS)
+    for k, val in tags.items():
+      p = p.tag(k, val)
+    p = p.field("small_s", round(model_secs["small"], 2)).field("big_s", round(model_secs["big"], 2))
     points.append(p)
   faults = FaultTracker(tags, offset)
   run: list[int] = []  # frame times of the current unbroken stretch of the rack ignoring our torque request
@@ -212,5 +281,10 @@ def extract_rlog(path, tags: dict, fallback_start_ns: int | None) -> tuple[list[
     for k, val in summary.items():
       s = s.field(k, round(val, 3))
     points.append(s)
+  if hands["drive_s"] > 0:
+    h = pt("hands_summary", first)
+    for k, val in hands.items():
+      h = h.field(k, round(val, 2))
+    points.append(h)
   summary["span"] = (first + offset, last + offset) if first is not None else None
   return points, summary

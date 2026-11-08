@@ -30,8 +30,9 @@ OP_ALERTS = {
   "controlsMismatch", "canError", "canBusMissing", "steerUnavailable", "relayMalfunction", "vehicleSensorsInvalid",
   "steerSaturated", "steerTempUnavailableSilent",
 }
-# which driving model is running (sunnypilot forks with a Chestnut accelerator run a "big" model on it, falling back to
-# the device's own "small" model): big while the Chestnut reports a live temperature, loading while it starts up
+# which driving model is running (sunnypilot forks run a "big" model on a Chestnut accelerator or an off-board Jetlink
+# host, falling back to the device's own "small" model): big while the Chestnut reports a live temperature or
+# drivingModelData says it is big, loading while the big model starts up
 MODEL_CODES = {"small": 0, "loading": 1, "big": 2}
 CHESTNUT_STALE_NS = 3e9  # chestnutState is 1 Hz in qlogs
 
@@ -116,7 +117,9 @@ def read_events(path):
   return _log.Event.read_multiple_bytes(data)
 
 
-def extract_segment(path, tags: dict, fallback_start_ns: int | None) -> tuple[list[Point], dict, dict]:
+def extract_segment(path, tags: dict, fallback_start_ns: int | None,
+                    model_summary: bool = True) -> tuple[list[Point], dict, dict]:
+  """`model_summary`: False once this segment's rlog has given its model time, which is better than the qlog's."""
   msgs = list(read_events(path))
   if not msgs:
     return [], {}, {}
@@ -438,7 +441,7 @@ def extract_segment(path, tags: dict, fallback_start_ns: int | None) -> tuple[li
     points.append(pt("dm_summary", seg_start).field("steered_s", round(dm_sum["steered_s"], 2))
                   .field("distracted_s", round(dm_sum["distracted_s"], 2)).field("warnings", dm_sum["warnings"])
                   .field("max_level", dm_sum["max_level"]))
-  if any(model_secs.values()):
+  if model_summary and any(model_secs.values()):
     points.append(pt("model_summary", seg_start).field("small_s", round(model_secs["small"], 2))
                   .field("big_s", round(model_secs["big"], 2)))
   return points, summary, info

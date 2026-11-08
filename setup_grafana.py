@@ -89,7 +89,7 @@ ATTENTION_COLOURS = {0: ("attentive", "transparent"), 1: ("wheel touch (camera n
 LEAD_DIST_FACTOR = 1.0 if METRIC else 3.28084
 LEAD_DIST_UNIT = "lengthm" if METRIC else "lengthft"
 OVERVIEW_DAYS = 30  # the overview panels show the last this many days, whatever the time picker says
-OVERVIEW_PANELS = {1, 2, 3, 4, 33}
+OVERVIEW_PANELS = {1, 2, 3, 4, 33, 42}
 CSS_PANEL = 39  # the top bar's CSS (below); always where the code puts it, whatever the live layout says
 EVENT_LOG = 40  # the drive's events, one row each; scrolls to the shared crosshair's time (FOLLOW_JS)
 BAR = '[data-testid="data-testid dashboard controls"]'
@@ -266,7 +266,7 @@ DESCRIPTIONS = {
       "- openpilot system alerts\n\n"
       "Only while in drive; startup noise is filtered out.",
   5: "The selected drive over time, one row each:\n\n"
-     "- **model**: which driving model ran (the device's own small model, or the Chestnut's big one)\n"
+     "- **model**: which driving model ran (the device's own small model, or the big one on a Chestnut or Jetlink host)\n"
      "- **mode**: the openpilot mode\n"
      "- **driver attention**: from the driver-monitoring camera (distracted, no face seen), and its alerts as the "
      "device shows them: Pay Attention or Touch Steering Wheel, level 1 (white), 2 (orange) and 3 (red)\n"
@@ -566,13 +566,59 @@ def build_dashboard() -> dict:
           fieldConfig={"defaults": {"unit": DIST, "decimals": 1}, "overrides": mode_overrides("name")},
           options={"pieType": "pie", "legend": {"displayMode": "table", "placement": "bottom", "values": ["value", "percent"]},
                    "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": False}}),
-    panel(3, f"{DIST_WORD} by driver", "barchart", 0, 15, 16, 7,
+    panel(3, f"{DIST_WORD} by driver", "barchart", 0, 15, 10, 7,
           [target(src("mode_summary", ' and r._field == "miles"') + DRIVER_FILTER + TO_DIST +
                   '  |> group(columns: ["driver", "mode"])\n  |> sum()\n  |> group()\n'
                   '  |> pivot(rowKey: ["driver"], columnKey: ["mode"], valueColumn: "_value")')],
           fieldConfig={"defaults": {"unit": DIST, "decimals": 1}, "overrides": mode_overrides("name")},
           options={"orientation": "horizontal", "stacking": "normal", "xField": "driver", "showValue": "never",
                    "legend": {"displayMode": "list", "placement": "bottom"}}),
+    # the wheel's capacitive touch sensor, from rlogs only (ct.rlog: hands_summary): one bar per driver, like the miles
+    # beside it, split into four parts of the driving time that add up to 100% (a_..d_: Flux orders the columns by name)
+    panel(42, "Hands on wheel by driver", "barchart", 10, 15, 6, 7,
+          [target('import "math"\n' + src("hands_summary") + DRIVER_FILTER +
+                  '  |> group(columns: ["driver", "_field"])\n  |> sum()\n  |> group()\n'
+                  '  |> pivot(rowKey: ["driver"], columnKey: ["_field"], valueColumn: "_value")\n'
+                  '  |> filter(fn: (r) => r.drive_s > 0.0)\n'
+                  '  |> sort(columns: ["drive_s"], desc: true)\n'
+                  # the hours it's based on go in the driver's label: one axis, percentages only
+                  '  |> map(fn: (r) => ({driver: r.driver + " (" + string(v: math.round(x: r.drive_s / 360.0) / 10.0) + " h)",\n'
+                  '      a_op_on: 100.0 * r.steer_hands_s / r.drive_s,\n'
+                  '      b_op_off: 100.0 * (r.steer_s - r.steer_hands_s) / r.drive_s,\n'
+                  '      c_me_on: 100.0 * (r.hands_s - r.steer_hands_s) / r.drive_s,\n'
+                  '      d_me_off: 100.0 * (r.drive_s - r.steer_s - r.hands_s + r.steer_hands_s) / r.drive_s}))')],
+          description=f"Each driver's driving time over the last {OVERVIEW_DAYS} days, split by who was steering and whether "
+                      "hands were on the steering wheel, from the wheel's own touch sensor. The parts add up to 100%; "
+                      "hover for the numbers.\n\n"
+                      "- **h** after each name: hours driven (moving in a forward gear) on drives with full logs\n"
+                      "- **openpilot, hands on** / **openpilot, hands off**: openpilot was steering (full, MADS or "
+                      "steer + stock ACC)\n"
+                      "- **Driver, hands on** / **Driver, hands off**: openpilot wasn't steering\n\n"
+                      "Hands count as on while the car's capacitive touch sensor feels them or you turn the wheel.\n\n"
+                      "**Sensor artifact:** the touch sensor often loses hands that are on the wheel, for a few "
+                      "seconds at a time, even while the driver is turning it (seen with a light grip; gloves or "
+                      "where the wheel is held may matter too). On one drive it read no hands for two thirds of the "
+                      "time the driver was steering, and in most of that the driver was putting force into the wheel. "
+                      "So while the driver steers, hands also stay counted for 5 seconds after the sensor or a turn of "
+                      "the wheel last showed them. Not while openpilot steers, where brief touches with the hands off "
+                      "in between are possible: that hands-off share is never understated, but can still include "
+                      "some of these dropouts.\n\n"
+                      "Only drives with full logs (rlogs, copied off the comma on home Wi-Fi) have the touch sensor, so "
+                      "drives without them aren't counted.",
+          fieldConfig={"defaults": {"unit": "percent", "decimals": 0, "min": 0, "max": 100, "noValue": "no full logs"},
+                       # teal / magenta / amber: hues the mode colours don't use, so nothing reads as MADS or ACC;
+                       # checked for colour-blind separation and contrast on Grafana's dark theme. Hands-off while
+                       # openpilot steers is the one to notice, so it gets the strongest colour
+                       "overrides": [{"matcher": {"id": "byName", "options": n},
+                                      "properties": [{"id": "displayName", "value": label},
+                                                     {"id": "color", "value": {"mode": "fixed", "fixedColor": colour}}]}
+                                     for n, label, colour in (
+                                       ("a_op_on", "openpilot, hands on", "#199e70"),
+                                       ("b_op_off", "openpilot, hands off", "#d55181"),
+                                       ("c_me_on", "Driver, hands on", "#c98500"),
+                                       ("d_me_off", "Driver, hands off", "#8e8e8e"))]},
+          options={"orientation": "horizontal", "stacking": "normal", "xField": "driver", "showValue": "never",
+                   "legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "multi"}}),
     # a typical day of the week: each weekday's distance over every such day since the first drive (0 when not driven)
     panel(38, f"Average {DIST_WORD.lower()} by day of the week (all drives)", "barchart", 0, 22, 24, 6,
           [target('import "array"\nimport "date"\n' + TZ + DAY_LABEL +
@@ -780,7 +826,7 @@ def build_dashboard() -> dict:
                          START_COLUMN, ROUTE_LINK,
                          {"matcher": {"id": "byName", "options": "model"},
                           "properties": [{"id": "displayName", "value": "Model"}, {"id": "noValue", "value": "–"},
-                                         {"id": "description", "value": "Driving model. (big) = the Chestnut's model; a % means it fell back to the device's own model partway"}]},
+                                         {"id": "description", "value": "Driving model. (big) = the big model on a Chestnut or Jetlink host; a % means it fell back to the device's own model partway"}]},
                          {"matcher": {"id": "byName", "options": "version"}, "properties": [{"id": "displayName", "value": "Version"}]},
                          {"matcher": {"id": "byName", "options": "branch"}, "properties": [{"id": "displayName", "value": "Branch"}]},
                          {"matcher": {"id": "byName", "options": "commit"}, "properties": [{"id": "displayName", "value": "Commit"}]},
@@ -837,7 +883,7 @@ def build_dashboard() -> dict:
           transformations=[{"id": "organize", "options": {"indexByName": {"model": 0, "openpilot": 1, "device": 2, "big": 3, "car": 4}}}],
           description="This drive, from the car coming on (the comma starting to log) until it could engage:\n\n"
                       "- **grey**: openpilot starting up\n"
-                      "- **purple / orange**: waiting for the first driving-model output, from the Chestnut's big model (purple) or the "
+                      "- **purple / orange**: waiting for the first driving-model output, from the big model on a Chestnut or Jetlink host (purple) or the "
                       "device's own (orange, also after a failed big-model load). Nothing drives while the big model loads.\n"
                       "- **yellow**: waiting on the car (in park or reverse, door open, seatbelt off...) until openpilot first said it "
                       "could be engaged",
@@ -847,7 +893,7 @@ def build_dashboard() -> dict:
                          {"matcher": {"id": "byName", "options": "openpilot"},
                           "properties": [{"id": "displayName", "value": "openpilot starting"}, {"id": "color", "value": {"mode": "fixed", "fixedColor": "#8e8e8e"}}]},
                          {"matcher": {"id": "byName", "options": "big"},
-                          "properties": [{"id": "displayName", "value": "big model (Chestnut)"}, {"id": "color", "value": {"mode": "fixed", "fixedColor": "#B877D9"}},
+                          "properties": [{"id": "displayName", "value": "big model (Chestnut/Jetlink)"}, {"id": "color", "value": {"mode": "fixed", "fixedColor": "#B877D9"}},
                                          {"id": "noValue", "value": ""}]},
                          {"matcher": {"id": "byName", "options": "device"},
                           "properties": [{"id": "displayName", "value": "device model"}, {"id": "color", "value": {"mode": "fixed", "fixedColor": "#FF9830"}}]},
@@ -907,11 +953,19 @@ def build_dashboard() -> dict:
                   '  |> last()\n  |> group()\n  |> pivot(rowKey: ["route"], columnKey: ["_field"], valueColumn: "_value")\n'
                   '  |> findRecord(fn: (key) => true, idx: 0)\n'
                   'small = if exists names.model_small and names.model_small != "" then names.model_small else "device model"\n'
-                  'big = if exists names.model_big and names.model_big != "" then names.model_big else "Chestnut model"\n' +
-                  src("drive", ' and r.route == "${route}" and r._field == "model_code"') +
+                  'big = if exists names.model_big and names.model_big != "" then names.model_big else "big model"\n' +
+                  # from the qlog, and from the rlog where it was copied: the rlog's modelV2 knows a Jetlink big model the
+                  # qlog can't see. Each window takes the higher of the two, so big from either wins and loading still shows
+                  'qlog = ' + src("drive", ' and r.route == "${route}" and r._field == "model_code"').lstrip() +
+                  '  |> keep(columns: ["_start", "_stop", "_time", "_value"])\n  |> group()\n  |> sort(columns: ["_time"])\n'
                   '  |> aggregateWindow(every: v.windowPeriod, fn: last, createEmpty: false)\n'
+                  'rlog = ' + src("model_rlog", ' and r.route == "${route}" and r._field == "model_code"').lstrip() +
+                  '  |> keep(columns: ["_start", "_stop", "_time", "_value"])\n  |> group()\n  |> sort(columns: ["_time"])\n'
+                  '  |> aggregateWindow(every: v.windowPeriod, fn: last, createEmpty: false)\n'
+                  'union(tables: [qlog, rlog])\n  |> group(columns: ["_time"])\n  |> max()\n  |> group()\n  |> sort(columns: ["_time"])\n'
                   '  |> map(fn: (r) => ({_time: r._time, _field: "model",\n'
-                  '      _value: if r._value == 2 then big + " (big)" else if r._value == 1 then "loading big model" else small + " (small)"}))', "E"),
+                  '      _value: if r._value == 2 then big + " (big)" else if r._value == 1 then "loading big model" else small + " (small)"}))\n'
+                  '  |> group(columns: ["_field"])', "E"),
            # lane-line confidence while moving, as a colour strip; windows of at least 5 s so it doesn't flicker, empty
            # windows (stopped, or no data) stay blank
            target('every = if int(v: v.windowPeriod) < int(v: 5s) then 5s else v.windowPeriod\n' +
@@ -1402,10 +1456,10 @@ def build_dashboard() -> dict:
                   '  |> filter(fn: (r) => r._measurement == "route" and (r._field == "model_big" or r._field == "model_small"))\n'
                   '  |> group(columns: ["_field"])\n  |> last()\n'
                   '  |> map(fn: (r) => ({_value: if r._value == "" then "none" else r._value,\n'
-                  '      name: if r._field == "model_big" then "Chestnut" else "device"}))\n'
+                  '      name: if r._field == "model_big" then "big model" else "device"}))\n'
                   '  |> group(columns: ["name"])')],
           description="The driving models selected in sunnypilot's model manager on the newest drive: the big model "
-                      "run on the Chestnut accelerator, and the device's own model.",
+                      "run on a Chestnut accelerator or an off-board Jetlink host, and the device's own model.",
           fieldConfig={"defaults": {"displayName": "${__field.labels.name}", "color": {"mode": "fixed", "fixedColor": "text"}},
                        "overrides": []},
           options={**stat_opts, "colorMode": "none", "textMode": "value_and_name", "orientation": "horizontal",
