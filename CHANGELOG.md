@@ -20,9 +20,10 @@ in the background after the update.
 
 - **Hands on wheel by driver** is one bar per driver, like **Miles by driver**: the driving time split into
   openpilot steering with hands on / hands off and the driver steering with hands on / hands off, adding up to 100%.
-- **Hands on wheel by driver** no longer counts hands as off when the touch sensor briefly loses them. The sensor
-  drops out for a few seconds at a time with gloves or a light grip, even while you're turning the wheel, which
-  showed as a lot of "Driver, hands off". Turning the wheel now counts as hands on, and while you steer, hands stay
+- **Hands on wheel by driver** no longer counts hands as off when the touch sensor briefly loses them. This is a
+  sensor artifact: it often loses hands that are on the wheel for a few seconds at a time, even while you're turning
+  it (seen with a light grip; gloves or where you hold the wheel may matter too), which showed as a lot of "Driver,
+  hands off". Turning the wheel now counts as hands on, and while you steer, hands stay
   counted for 5 seconds after the sensor or a turn of the wheel last showed them (on one drive, driving yourself with
   hands off went from 68% to 5%). While openpilot steers there's no such hold, so its hands-off share is never
   understated.
