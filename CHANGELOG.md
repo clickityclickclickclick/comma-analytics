@@ -18,8 +18,8 @@ What changed in each update, newest first. To update, run
 
   The quick logs come back in about 15 minutes. The full logs are then re-read in the background, about 1,000
   one-minute segments an hour (a few hours for a large archive), oldest first, so the 30-day chart fills in last.
-  Braking, faults and lane detail are incomplete until that finishes. If you skipped the re-import for 2026-11-07,
-  this one covers it too.
+  Braking, faults and lane detail are incomplete until that finishes. Coming from before 2026-11-03? This one
+  re-import covers every entry since then (2026-11-03 to 2026-11-08); there's no need to run it once per entry.
 - **Other cars:** nothing to run. Full logs (rlogs) already copied off the device are read in the background after
   the update, which gives Jetlink drives their big model.
 
