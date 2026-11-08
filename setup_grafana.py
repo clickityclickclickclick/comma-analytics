@@ -593,11 +593,18 @@ def build_dashboard() -> dict:
                       "- **h** after each name: hours driven (moving in a forward gear) on drives with full logs\n"
                       "- **openpilot, hands on** / **openpilot, hands off**: openpilot was steering (full, MADS or "
                       "steer + stock ACC)\n"
-                      "- **Driver, hands on** / **Driver, hands off**: openpilot wasn't steering (hands off here is "
-                      "usually a brief moment, or a light touch the sensor missed)\n\n"
+                      "- **Driver, hands on** / **Driver, hands off**: openpilot wasn't steering\n\n"
+                      "Hands count as on while the car's capacitive touch sensor feels them or you turn the wheel.\n\n"
+                      "**Sensor artifact:** the touch sensor often loses hands that are on the wheel, for a few "
+                      "seconds at a time, even while the driver is turning it (seen with a light grip; gloves or "
+                      "where the wheel is held may matter too). On one drive it read no hands for two thirds of the "
+                      "time the driver was steering, and in most of that the driver was putting force into the wheel. "
+                      "So while the driver steers, hands also stay counted for 5 seconds after the sensor or a turn of "
+                      "the wheel last showed them. Not while openpilot steers, where brief touches with the hands off "
+                      "in between are possible: that hands-off share is never understated, but can still include "
+                      "some of these dropouts.\n\n"
                       "Only drives with full logs (rlogs, copied off the comma on home Wi-Fi) have the touch sensor, so "
-                      "drives without them aren't counted. This is the car's capacitive sensor, not openpilot's "
-                      "\"steering pressed\", which only notices you pushing on the wheel.",
+                      "drives without them aren't counted.",
           fieldConfig={"defaults": {"unit": "percent", "decimals": 0, "min": 0, "max": 100, "noValue": "no full logs"},
                        # teal / magenta / amber: hues the mode colours don't use, so nothing reads as MADS or ACC;
                        # checked for colour-blind separation and contrast on Grafana's dark theme. Hands-off while

@@ -5,8 +5,10 @@ What changed in each update, newest first. To update, run
 
 ## 2026-11-08
 
-**After updating:** nothing to run. On a car other than a Rivian, the full logs (rlogs) already copied off the
-device are read in the background after the update.
+**After updating:** on a Rivian, re-import your drives (`sync.py --reload all`, the three commands under 2026-11-07)
+so the **Hands on wheel by driver** chart is recounted the new way; until then, drives read before the update keep
+the old count. On another car there's nothing to run: the full logs (rlogs) already copied off the device are read
+in the background after the update.
 
 ### Fixed
 
@@ -18,6 +20,12 @@ device are read in the background after the update.
 
 - **Hands on wheel by driver** is one bar per driver, like **Miles by driver**: the driving time split into
   openpilot steering with hands on / hands off and the driver steering with hands on / hands off, adding up to 100%.
+- **Hands on wheel by driver** no longer counts hands as off when the touch sensor briefly loses them. The sensor
+  drops out for a few seconds at a time with gloves or a light grip, even while you're turning the wheel, which
+  showed as a lot of "Driver, hands off". Turning the wheel now counts as hands on, and while you steer, hands stay
+  counted for 5 seconds after the sensor or a turn of the wheel last showed them (on one drive, driving yourself with
+  hands off went from 68% to 5%). While openpilot steers there's no such hold, so its hands-off share is never
+  understated.
 
 ## 2026-11-07
 

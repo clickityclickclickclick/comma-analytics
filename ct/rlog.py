@@ -43,6 +43,11 @@ _VDM_ADAS = _db.get_message_by_name("VDM_AdasSts")
 STALK_UP = (1, 2)
 # the steering wheel's capacitive touch sensor (rlog only: the qlog keeps almost none of these frames)
 _WHEEL_TOUCH = _db.get_message_by_name("SCCM_WheelTouch")
+# the touch sensor drops out for a few seconds at a time while the hands stay on (gloves, a light grip): while the
+# driver steers, hands count as on until this long after the sensor or a turn of the wheel last showed them (on one
+# drive the driver's false hands-off went from 68% to 5%). Not while openpilot steers: brief touches a few seconds
+# apart with the hands off in between are possible there, and the hold would count them as hands on throughout
+HANDS_HOLD_NS = 5e9
 CAUSE_WINDOW_NS = 1.0e9  # a stalk push / openpilot cancel this long before the end caused it
 
 # numeric so a time window can take the max: friction beats regen beats nothing
@@ -91,6 +96,9 @@ def extract_rlog(path, tags: dict, fallback_start_ns: int | None, brand: str | N
   # seconds moving in a forward gear, and of those with hands on the wheel; the same while openpilot steered
   hands = {"drive_s": 0.0, "hands_s": 0.0, "steer_s": 0.0, "steer_hands_s": 0.0}
   touch_t = None
+  # the driver turning the wheel (carState.steeringPressed, from the driver's torque) shows hands on as well
+  steer_pressed = False
+  hands_t = None  # last time the sensor or a turn of the wheel showed hands on
 
   def rlog_cause(t: int) -> str:
     alert = alert_cause(disables, t)
@@ -118,6 +126,7 @@ def extract_rlog(path, tags: dict, fallback_start_ns: int | None, brand: str | N
       continue  # another car: only the model is read
     elif w == "carState":
       v_ego = m.carState.vEgo
+      steer_pressed = m.carState.steeringPressed
       in_drive = str(m.carState.gearShifter) in FORWARD_GEARS
       if m.carState.brakePressed:
         brake_t = t
@@ -155,7 +164,11 @@ def extract_rlog(path, tags: dict, fallback_start_ns: int | None, brand: str | N
           if _VDM_ADAS.decode(bytes(c.dat), decode_choices=False)["VDM_UserAdasRequest"] in STALK_UP:
             stalk_up_t = t
         elif c.src == 0 and c.address == _WHEEL_TOUCH.frame_id:
-          on = _WHEEL_TOUCH.decode(bytes(c.dat), decode_choices=False)["SCCM_WheelTouch_HandsOn"] == 1
+          on = _WHEEL_TOUCH.decode(bytes(c.dat), decode_choices=False)["SCCM_WheelTouch_HandsOn"] == 1 or steer_pressed
+          if on:
+            hands_t = t
+          elif not lat_active and hands_t is not None and t - hands_t < HANDS_HOLD_NS:
+            on = True
           dt = min((t - touch_t) / 1e9, 1.0) if touch_t is not None else 0.0
           touch_t = t
           if in_drive and v_ego * 3.6 > MOVING_KPH:

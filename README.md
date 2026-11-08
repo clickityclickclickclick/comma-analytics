@@ -17,7 +17,10 @@ Home Assistant names them: see *driver names* under Setup):
 - **Hands on wheel by driver** (Rivian, drives copied off the device): one bar per driver, like the miles beside
   it, splitting the hours driven into openpilot steering with hands on / hands off and the driver steering with hands
   on / hands off. It reads the car's capacitive wheel-touch sensor, so a light rest of the hands counts, not only
-  pushing on the wheel.
+  pushing on the wheel. Turning the wheel counts too. **Sensor artifact:** the sensor often loses hands that are on
+  the wheel for a few seconds at a time, even while the driver is turning it, so while the driver steers, hands stay
+  counted for 5 seconds after the sensor or a turn of the wheel last showed them. There's no such hold while
+  openpilot steers, so its hands-off share is never understated but can still include some dropouts.
 
 **Each drive:**
 
