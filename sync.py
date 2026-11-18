@@ -218,17 +218,24 @@ def write_status(write, cloud_ok: bool, error: str = "") -> None:
 
 
 def ingest_device(write, state, changes) -> None:
+  # route -> the segments it had when none of them had a GPS time fix. Checked again once more segments arrive:
+  # a drive's first minute is often copied before the GPS has a fix (e.g. the device on home wifi as the car starts)
+  no_gps = state.get("no_gps")
+  if not isinstance(no_gps, dict):  # older state: a plain list, given up on for good; look at each once more
+    no_gps = state["no_gps"] = {route: [] for route in no_gps or []}
   for route, segs in device.device_routes().items():
     name = f"{ENV['DONGLE_ID']}|{route}"
-    new = [x for x in segs if x not in set(state["loaded"].get(name, []))]
-    if not new or route in state.setdefault("no_gps", []):
+    loaded = set(state["loaded"].get(name, []))
+    new = [x for x in segs if x not in loaded]
+    if not new or no_gps.get(route) == segs:
       continue
     r = device.stage(route, segs)
-    if r is None:
-      state["no_gps"].append(route)  # never moved / no time fix: can't be placed on the timeline
+    if r is None:  # car switched on but no fix yet (or never, e.g. parked): can't be placed on the timeline
+      no_gps[route] = segs
       save_state(state)
-      log(f"{name}: no GPS time fix in any segment, skipped")
+      log(f"{name}: no GPS time fix in {len(segs)} segment(s) yet, skipped until more arrive")
       continue
+    no_gps.pop(route, None)
     done = set(state["loaded"].get(name, []))
     if r.get("source") == "device":
       r["log_metres"] = r.get("log_metres", 0.0) if done else 0.0

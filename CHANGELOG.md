@@ -3,6 +3,18 @@
 What changed in each update, newest first. To update, run
 `git pull && docker compose up -d --build`.
 
+## 2026-11-18
+
+**After updating:** nothing to run. Drives skipped before are looked at once more by themselves.
+
+### Fixed
+
+- A drive copied straight off the device is no longer **skipped for good** when its first minute was copied before
+  the GPS had a fix (for example, the device on home wifi as the car starts in the garage). The rest of the drive,
+  with GPS, used to be ignored when it was copied later; it showed up only if comma's servers had the drive too.
+  Now it's read as soon as a minute with a GPS fix arrives. A car switched on without driving (no fix at all) is
+  still skipped.
+
 ## 2026-11-08
 
 **After updating:**
