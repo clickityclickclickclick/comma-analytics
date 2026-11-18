@@ -23,6 +23,13 @@ What changed in each update, newest first. To update, run
   Failures can be passing, such as the computer running low on memory. After 3 failures the sync gives up on that
   file and says so in its log (`docker compose logs sync | grep "rlog decode failed"`); if the file is copied again,
   or you re-import the drive with `--reload`, it gets another 3 tries.
+- **With Home Assistant set up:** when Home Assistant can't be reached (down, or its token expired), drives still
+  come in from comma's servers. Before, the hourly download from comma's servers stopped until Home Assistant was
+  back. Drives that come in meanwhile are labelled with the last driver Home Assistant reported before it went
+  away. Without Home Assistant, nothing changes.
+- The **first download from comma's servers** after a start looks back 30 days (`FIRST_DAYS`). If that first try
+  failed (no internet for a moment, comma's servers down), the retries looked back only 4 days, so older drives
+  still on comma's servers were never downloaded. Now the retries keep looking back 30 days until one gets through.
 
 ## 2026-11-08
 

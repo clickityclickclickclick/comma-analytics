@@ -52,11 +52,16 @@ def download_qlogs(route: dict) -> list[int]:
 DRIVER_HISTORY = ARCHIVE / "active_driver.json"
 
 
+def saved_driver_history() -> list[tuple[float, str]]:
+  """The driver changes saved locally so far (empty without HA, or before its first read)."""
+  if not DRIVER_HISTORY.exists():
+    return []
+  return sorted((float(t), n) for t, n in json.loads(DRIVER_HISTORY.read_text()))
+
+
 def sync_driver_history(days: float = 10) -> list[tuple[float, str]]:
   """Merge HA's active-driver history into a local file (HA purges after ~10 days). Empty without HA."""
-  hist = {}
-  if DRIVER_HISTORY.exists():
-    hist = {float(t): n for t, n in json.loads(DRIVER_HISTORY.read_text())}
+  hist = dict(saved_driver_history())
   if not ha_enabled():
     return sorted(hist.items())
   now = dt.datetime.now(dt.UTC)

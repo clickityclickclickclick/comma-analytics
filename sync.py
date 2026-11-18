@@ -26,7 +26,7 @@ from ct.faults import FAULTS, FaultTracker
 from ct.rlog import extract_rlog
 from ct.safety import extract_alerts
 from ct.sources import (download_qlogs, driver_at, fork_name, github_status, list_routes, newest_software, route_dir,
-                        sync_driver_history)
+                        saved_driver_history, sync_driver_history)
 
 
 DELETE = None  # InfluxDB delete API, set in main()
@@ -326,10 +326,7 @@ def device_pull(write, state, changes, verbose: bool = False, route: str | None 
       save_state(state)
   except Exception as e:  # powered off mid-copy etc.; resume next time
     log(f"device: pull failed: {e}")
-  try:
-    changes = drivers(write)  # the profile may have changed since the last hourly refresh
-  except Exception as e:
-    log(f"driver history refresh failed: {e}")
+  changes = drivers(write)  # the profile may have changed since the last hourly refresh
   ingest_device(write, state, changes)
   n = ingest_rlogs(write, state, changes)
   if n:
@@ -394,7 +391,14 @@ def github_check(write) -> bool:
 
 
 def drivers(write) -> list:
-  changes = sync_driver_history()
+  """Driver changes, refreshed from Home Assistant when it's set up. HA is optional and may be down: then the
+  changes saved so far are used, so the rest of the sync carries on."""
+  try:
+    changes = sync_driver_history()
+  except Exception as e:  # HA down, token expired, ...: drives are labelled from what was saved before
+    saved = saved_driver_history()
+    log(f"driver history: Home Assistant not reachable, using the {len(saved)} changes saved before: {e}")
+    return saved
   if changes:
     write.write(ENV["INFLUX_BUCKET"], ENV["INFLUX_ORG"],
                 [Point("active_driver").time(int(t * 1e9), WritePrecision.NS).field("driver", n) for t, n in changes])
@@ -432,7 +436,8 @@ def main() -> int:
           if time.time() >= next_cloud:
             changes = drivers(write)
             ok = cloud_pull(write, state, changes, days) == 0
-            days = args.days
+            if ok:  # the first look-back (FIRST_DAYS) stays until a pull gets through
+              days = args.days
             ok = github_check(write) and ok
             next_cloud = time.time() + (cloud_every if ok else retry_every)
           device_pull(write, state, changes)
