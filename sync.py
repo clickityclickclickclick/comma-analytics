@@ -247,9 +247,14 @@ def ingest_device(write, state, changes) -> None:
     log(f"{name}: {len(new)} segs from device, {n} points written")
 
 
+RLOG_TRIES = 3  # tries before an rlog that won't decode is given up on
+RLOG_RETRY_S = 300  # at least this long between tries, so a passing problem (e.g. out of memory) has cleared
+
+
 def ingest_rlogs(write, state, changes, limit: int | None = 30) -> int:
   """Braking + EPS fault data from rlogs copied off the device. A few segments per call so the daemon keeps polling."""
   loaded = state.setdefault("rlog_loaded", {})
+  failed = state.setdefault("rlog_failed", {})  # name -> {seg: [tries, file size, last try]}: rlogs that wouldn't decode
   n_segs = 0
   for route, _ in device.device_routes().items():
     name = f"{ENV['DONGLE_ID']}|{route}"
@@ -268,12 +273,23 @@ def ingest_rlogs(write, state, changes, limit: int | None = 30) -> int:
         continue
       if limit is not None and n_segs >= limit:
         break
+      path = device.DEVICE / f"{route}--{seg}" / "rlog.zst"
+      tries, size, last_try = failed.get(name, {}).get(str(seg), [0, None, 0])
+      if size != path.stat().st_size:
+        tries = 0  # copied again since it failed: a fresh start
+      elif tries >= RLOG_TRIES or time.time() - last_try < RLOG_RETRY_S:
+        continue  # gave up on this file (--reload ROUTE tries it again), or tried it only just now
       try:
-        points, summary = extract_rlog(device.DEVICE / f"{route}--{seg}" / "rlog.zst", tags, segment_start_ns(r, seg), brand)
-      except Exception as e:  # truncated/corrupt file: leave it for a later pass
-        log(f"{name} seg {seg}: rlog decode failed: {e}")
-        done.add(seg)
+        points, summary = extract_rlog(path, tags, segment_start_ns(r, seg), brand)
+      except Exception as e:  # a bad file, or a one-off (e.g. out of memory): try again on later passes, then give up
+        tries += 1
+        failed.setdefault(name, {})[str(seg)] = [tries, path.stat().st_size, int(time.time())]
+        save_state(state)
+        last = " (giving up)" if tries >= RLOG_TRIES else f", will try again in {RLOG_RETRY_S // 60} min"
+        log(f"{name} seg {seg}: rlog decode failed, try {tries} of {RLOG_TRIES}{last}: {e}")
         continue
+      if failed.get(name, {}).pop(str(seg), None) is not None and not failed[name]:
+        del failed[name]
       if points:
         if not summary.get("model_only"):  # another car's rlog says nothing about how engagements ended
           replace_qlog_engagements(tags["route"], summary.get("span"))
@@ -441,6 +457,7 @@ def main() -> int:
         state["loaded"].pop(r["fullname"], None)
         state.get("rlog_loaded", {}).pop(r["fullname"], None)  # braking data goes too; re-ingested by the daemon
         state.get("rlog_model", {}).pop(r["fullname"], None)  # and the rlog's model time with it
+        state.get("rlog_failed", {}).pop(r["fullname"], None)  # rlogs that wouldn't decode get another go
         segs = sorted(int(p.name.split(".")[0]) for p in route_dir(r["fullname"]).glob("*.qlog.zst"))
         done: set[int] = set()
         if r.get("source") == "device":

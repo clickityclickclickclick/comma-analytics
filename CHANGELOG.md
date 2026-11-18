@@ -17,6 +17,12 @@ What changed in each update, newest first. To update, run
   also had it (the dashboard downloads drives from there too). Now a drive with no GPS fix yet waits, and is read
   as soon as one of its quick logs with a GPS fix is copied. A car switched on without driving (no GPS fix at all)
   is still skipped.
+- A full log (rlog) that fails to read is **tried again**, up to 3 times, at least 5 minutes apart. Before, one
+  failure could mark that minute's full log as read for good, so its braking, faults, lane detail and hands on wheel
+  were missing from the dashboard (or, if it was the drive's last one, it was retried every minute without end).
+  Failures can be passing, such as the computer running low on memory. After 3 failures the sync gives up on that
+  file and says so in its log (`docker compose logs sync | grep "rlog decode failed"`); if the file is copied again,
+  or you re-import the drive with `--reload`, it gets another 3 tries.
 
 ## 2026-11-08
 

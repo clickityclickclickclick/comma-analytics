@@ -127,6 +127,9 @@ docker compose start sync
   `docker compose exec sync python setup_grafana.py --reset-layout`.
 - **The dashboard follows your newest drive.** The sync saves the newest drive's time span as the dashboard's default
   time range whenever a drive arrives, so a default range you save in Grafana is replaced at the next drive.
+- **A full log (rlog) that won't read is tried 3 times,** at least 5 minutes apart, then left alone. The log says
+  so: `docker compose logs sync | grep "rlog decode failed"`. Re-importing that drive (`--reload` with its route
+  number) tries it again.
 - **`archive/` is the permanent copy of your raw logs.** The database can always be rebuilt from it with
   `--reload all`, so back it up.
 - **Changing `INFLUX_*` in `.env` after the first start does nothing:** InfluxDB only reads them on first start.
