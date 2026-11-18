@@ -3,6 +3,21 @@
 What changed in each update, newest first. To update, run
 `git pull && docker compose up -d --build`.
 
+## 2026-11-18
+
+**After updating:** nothing to run. Drives skipped before are looked at once more by themselves.
+
+### Fixed
+
+- A drive copied straight off the device is no longer **skipped from the dashboard** when none of the quick logs
+  copied first had a GPS fix (for example, the device on home wifi as the car starts in the garage). The device
+  records each minute of driving as a quick log (qlog) and a full log (rlog), and a drive's logs don't all reach
+  the dashboard at once: some are copied as the car starts at home, the rest later. The remaining quick and full
+  logs, copied later with GPS, used to be ignored, so such a drive showed on the dashboard only if comma's servers
+  also had it (the dashboard downloads drives from there too). Now a drive with no GPS fix yet waits, and is read
+  as soon as one of its quick logs with a GPS fix is copied. A car switched on without driving (no GPS fix at all)
+  is still skipped.
+
 ## 2026-11-08
 
 **After updating:**
