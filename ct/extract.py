@@ -118,8 +118,9 @@ def read_events(path):
 
 
 def extract_segment(path, tags: dict, fallback_start_ns: int | None,
-                    model_summary: bool = True) -> tuple[list[Point], dict, dict]:
-  """`model_summary`: False once this segment's rlog has given its model time, which is better than the qlog's."""
+                    model_summary: bool = True, engagements: bool = True) -> tuple[list[Point], dict, dict]:
+  """`model_summary`: False once this segment's rlog has given its model time, which is better than the qlog's.
+  `engagements`: False once its rlog has given the engagements (with how each ended), which replace the qlog's guesses."""
   msgs = list(read_events(path))
   if not msgs:
     return [], {}, {}
@@ -198,7 +199,9 @@ def extract_segment(path, tags: dict, fallback_start_ns: int | None,
   first_op = first_model = first_chestnut = None
   first_engageable = None  # first moment openpilot could be engaged (any segment: it can wait on the car)
   startup_end = msgs[0].logMonoTime + STARTUP_S * 1e9 if info else 0  # initData's time = when this boot started logging
-  engagements = EngagementTracker(lambda meas, t: pt(meas, t), faults, "qlog")
+  write_engagements = engagements
+  # without them, the engage_dropped faults they raise go to a tracker that's thrown away
+  engagements = EngagementTracker(lambda meas, t: pt(meas, t), faults if write_engagements else FaultTracker(tags, offset), "qlog")
 
   def qlog_cause(t: int) -> str:
     return alert_cause(disables, t) or ("brake" if cur["brake"] else UNKNOWN_CAUSE)
@@ -428,7 +431,8 @@ def extract_segment(path, tags: dict, fallback_start_ns: int | None,
   # the first engageable moment in this segment, from the drive's start; the dashboard takes the drive's earliest
   if boot_t0 is not None and first_engageable is not None:
     points.append(pt("engage_ready", first_engageable).field("since_start_s", round((first_engageable - boot_t0) / 1e9, 2)))
-  points += engagements.points
+  if write_engagements:
+    points += engagements.points
   if steer_sum["n"]:
     points.append(pt("steering_summary", seg_start).field("err_sq_sum", round(steer_sum["err_sq_sum"], 4))
                   .field("n", steer_sum["n"]).field("sat_n", steer_sum["sat_n"]))

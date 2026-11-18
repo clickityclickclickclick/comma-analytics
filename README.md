@@ -46,11 +46,13 @@ Home Assistant names them: see *driver names* under Setup):
   coloured by which model came up (the big model on a Chestnut or Jetlink host, or the device's own).
 - **Engagements:** every disengagement with what ended it (brake, stalk cancel, the car dropping ACC, an openpilot
   cancel or alert), and engagements that didn't stick (under 3 s, not ended by you) flagged as errors. The exact
-  cause needs the full logs copied off the device (Rivian CAN); cloud-only drives show "cruise turned off".
+  cause needs the full logs copied off the device (Rivian CAN); cloud-only drives show "cruise turned off". Once a
+  minute's full log has been read, its engagements are kept even if that minute's quick log comes in later.
 - **Collision alerts:** openpilot's forward collision warning ("BRAKE! Risk of Collision") and the car's own FCW /
   emergency braking, called out at the top of the drive (speed, the car ahead, time to impact, how soon you braked,
   peak braking, closest gap), marked in red on the graphs and counted in the Drives table, with a close-up of the
-  6 s before to 8 s after (chart and half-second table; 100 Hz from the full logs when copied off the device).
+  6 s before to 8 s after (chart and half-second table; 100 Hz from the full logs when copied off the device). An
+  alert that runs from one minute's log into the next counts once.
 - **Driver attention:** from the driver-monitoring camera: openpilot's awareness budget, when it judged you
   distracted, and its alerts as the device names them (Pay Attention / Touch Steering Wheel, levels 1–3); per drive,
   the share of steered time you were distracted and the warning count.

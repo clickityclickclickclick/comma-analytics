@@ -23,7 +23,7 @@ from ct.config import ARCHIVE, ENV, load_state, save_state, secret
 from ct import device
 from ct.extract import extract_segment
 from ct.faults import FAULTS, FaultTracker
-from ct.rlog import extract_rlog
+from ct.rlog import BRANDS, extract_rlog
 from ct.safety import extract_alerts
 from ct.sources import (download_qlogs, driver_at, fork_name, github_status, list_routes, newest_software, route_dir,
                         saved_driver_history, sync_driver_history)
@@ -61,6 +61,23 @@ def replace_qlog_model(route: str, span: tuple[int, int] | None) -> None:
 def rlog_model(state, name: str) -> set[int]:
   """Segments of route `name` whose model time came from the rlog (see replace_qlog_model)."""
   return set(state.get("rlog_model", {}).get(name, []))
+
+
+def rlog_engage(state, name: str) -> set[int]:
+  """Segments of route `name` whose engagements came from the rlog (see replace_qlog_engagements)."""
+  return set(state.get("rlog_engage", {}).get(name, []))
+
+
+def upgrade_state(state) -> None:
+  """Fill in what older state files didn't keep."""
+  if "rlog_engage" not in state:  # every Rivian rlog read so far replaced its segment's qlog engagements
+    state["rlog_engage"] = {}
+    for name, segs in state.get("rlog_loaded", {}).items():
+      sw = route_dir(name) / "software.json"
+      brand = json.loads(sw.read_text()).get("brand") if sw.exists() else None
+      if brand is None or brand in BRANDS:  # same test as extract_rlog's
+        state["rlog_engage"][name] = sorted(segs)
+    save_state(state)
 
 
 def stitch_faults(write, tags: dict, names=STITCHED) -> None:
@@ -116,10 +133,13 @@ def write_alerts(write, route: dict, segs, tags: dict) -> int:
   n = 0
   for seg in sorted({x for s in segs for x in (s - 1, s, s + 1) if x >= 0}):
     try:
-      points, spans = extract_alerts(seg, qlog_for, best_for, tags, segment_start_ns(route, seg))
+      points, spans, seg_span = extract_alerts(seg, qlog_for, best_for, tags, segment_start_ns(route, seg))
     except Exception as e:  # truncated/corrupt log: the alert waits for a later pass
       log(f"{route['fullname']} seg {seg}: collision alert decode failed: {e}")
       continue
+    if seg_span and DELETE is not None:  # alerts written for this segment before (one may now belong to its neighbour)
+      DELETE.delete(dt.datetime.fromtimestamp(seg_span[0] / 1e9, dt.UTC), dt.datetime.fromtimestamp(seg_span[1] / 1e9, dt.UTC),
+                    f'_measurement="collision_alert" AND route="{tags["route"]}"', bucket=ENV["INFLUX_BUCKET"], org=ENV["INFLUX_ORG"])
     for start, stop in spans:  # the close-up's earlier copy (qlog, or a shorter window) goes first
       if DELETE is not None:
         DELETE.delete(dt.datetime.fromtimestamp(start / 1e9, dt.UTC), dt.datetime.fromtimestamp(stop / 1e9, dt.UTC),
@@ -153,8 +173,9 @@ def delete_route(client: InfluxDBClient, route: dict) -> None:
 
 
 def ingest_route(client, write, route: dict, segs: list[int], done: set[int], changes,
-                 rlog_model: set[int] = frozenset()) -> int:
-  """`rlog_model`: segments whose model time already came from the rlog, so the qlog's isn't written as well."""
+                 rlog_model: set[int] = frozenset(), rlog_engage: set[int] = frozenset()) -> int:
+  """`rlog_model` / `rlog_engage`: segments whose model time / engagements already came from the rlog, so a qlog read
+  after it (a late cloud upload, or one unreadable the first time) doesn't write its own as well."""
   driver = driver_at(changes, route["start_time_utc_millis"] / 1000)
   tags = route_tags(route, driver)
   n = 0
@@ -167,7 +188,8 @@ def ingest_route(client, write, route: dict, segs: list[int], done: set[int], ch
       continue
     path = route_dir(route["fullname"]) / f"{seg}.qlog.zst"
     try:
-      points, summary, seg_info = extract_segment(path, tags, segment_start_ns(route, seg), seg not in rlog_model)
+      points, summary, seg_info = extract_segment(path, tags, segment_start_ns(route, seg), seg not in rlog_model,
+                                                 seg not in rlog_engage)
     except Exception as e:  # truncated/corrupt qlog (e.g. upload cut off): skip it, retried next pass
       log(f"{route['fullname']} seg {seg}: unreadable qlog, skipped ({str(e).splitlines()[0]})")
       continue
@@ -239,7 +261,7 @@ def ingest_device(write, state, changes) -> None:
     done = set(state["loaded"].get(name, []))
     if r.get("source") == "device":
       r["log_metres"] = r.get("log_metres", 0.0) if done else 0.0
-    n = ingest_route(None, write, r, segs, done, changes, rlog_model(state, name))
+    n = ingest_route(None, write, r, segs, done, changes, rlog_model(state, name), rlog_engage(state, name))
     if r.get("source") == "device":
       (route_dir(name) / "route.json").write_text(json.dumps(r, indent=1))
     state["loaded"][name] = sorted(done)
@@ -293,6 +315,9 @@ def ingest_rlogs(write, state, changes, limit: int | None = 30) -> int:
       if points:
         if not summary.get("model_only"):  # another car's rlog says nothing about how engagements ended
           replace_qlog_engagements(tags["route"], summary.get("span"))
+          # a qlog read after this must not write its guesses again
+          engage = state.setdefault("rlog_engage", {})
+          engage[name] = sorted(set(engage.get(name, [])) | {seg})
         if summary.get("has_model"):
           replace_qlog_model(tags["route"], summary.get("span"))
           # a qlog read after this (a late cloud upload) must not write its model time again
@@ -361,7 +386,7 @@ def cloud_pull(write, state, changes, days: float) -> int:
       continue
     done = set(state["loaded"].get(name, []))
     # always rewrite the route summary: comma fills in distance/duration after the upload finishes
-    n = ingest_route(None, write, r, segs, done, changes, rlog_model(state, name))
+    n = ingest_route(None, write, r, segs, done, changes, rlog_model(state, name), rlog_engage(state, name))
     state["loaded"][name] = sorted(done)
     save_state(state)
     if n:
@@ -416,6 +441,7 @@ def main() -> int:
   args = ap.parse_args()
 
   state = load_state()
+  upgrade_state(state)
   with InfluxDBClient(url=ENV["INFLUX_URL"], token=secret("influx_token"), org=ENV["INFLUX_ORG"], timeout=60_000) as client:
     write = client.write_api(write_options=SYNCHRONOUS)
     global DELETE, QUERY
@@ -462,6 +488,7 @@ def main() -> int:
         state["loaded"].pop(r["fullname"], None)
         state.get("rlog_loaded", {}).pop(r["fullname"], None)  # braking data goes too; re-ingested by the daemon
         state.get("rlog_model", {}).pop(r["fullname"], None)  # and the rlog's model time with it
+        state.get("rlog_engage", {}).pop(r["fullname"], None)  # and its engagements
         state.get("rlog_failed", {}).pop(r["fullname"], None)  # rlogs that wouldn't decode get another go
         segs = sorted(int(p.name.split(".")[0]) for p in route_dir(r["fullname"]).glob("*.qlog.zst"))
         done: set[int] = set()

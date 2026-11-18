@@ -27,6 +27,13 @@ What changed in each update, newest first. To update, run
   come in from comma's servers. Before, the hourly download from comma's servers stopped until Home Assistant was
   back. Drives that come in meanwhile are labelled with the last driver Home Assistant reported before it went
   away. Without Home Assistant, nothing changes.
+- **Rivian, drives copied off the device:** when a minute's quick log (qlog) was read after its full log (rlog),
+  for example a quick log that couldn't be read the first time and came in again later, that minute's engagements
+  were stored twice, and the quick log's "cruise turned off" guesses and "engagement didn't stick" errors came back
+  next to the full log's real causes. Now the quick log leaves that minute's engagements to the full log.
+- A **collision alert** (FCW / AEB) whose warnings ran from one minute's log into the next was counted twice, with
+  two close-ups. Now it counts once, and its strongest warning includes the part in the next minute. If the earlier
+  minute's log comes in after the later one, the second copy is removed when it does.
 - The **first download from comma's servers** after a start looks back 30 days (`FIRST_DAYS`). If that first try
   failed (no internet for a moment, comma's servers down), the retries looked back only 4 days, so older drives
   still on comma's servers were never downloaded. Now the retries keep looking back 30 days until one gets through.
