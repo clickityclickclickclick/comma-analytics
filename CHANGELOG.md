@@ -5,16 +5,31 @@ What changed in each update, newest first. To update, run
 
 ## 2026-11-20
 
-**After updating:** nothing to run. Drives read before the update keep the old count (see below); to redo one, re-import
-it (`docker compose run --rm sync python sync.py --reload <route>`, or `--reload all` as under 2026-11-08).
+**After updating:** nothing to run. Only drives with a big model (Chestnut or Jetlink) are affected. Drives read
+before the update keep the old count, so an older Jetlink drive can still say it fell back to the device's model. To
+recount one, re-import it:
+
+```sh
+docker compose stop sync
+docker compose run --rm sync python sync.py --reload <route>
+docker compose start sync
+```
+
+`<route>` is the drive's id from the drive list (for example `0000018c`); `--reload all` recounts every drive (see
+2026-11-08 for how long that takes). The quick logs come back at once; the full logs (rlogs), where a Jetlink drive's
+big model is recorded, are re-read in the background within a few minutes. Until then that drive shows the device's
+model. After it, check `docker compose ps`: if the sync was started again during the re-import, stop it and run the
+re-import once more, or its full logs may not be re-read.
 
 ### Fixed
 
-- The drive list's **Model** column no longer says a drive fell back to the device's own model just because that model
-  drove while the car was **stopped**. A Jetlink host takes about a minute to start after the car turns on, and can drop
-  off as the car stops at the end, so a Jetlink drive read "Cinque Terre V3 Model (big) 88%, then WMI V12" though the
-  big model drove the whole time the car moved. Now only time **moving** on the device's own model counts. The wording
-  is also "…88%, the rest WMI V12": the "then" wasn't right when the device's model drove first.
+- **Jetlink:** the drive list's **Model** column no longer says a Jetlink drive fell back to the device's own model.
+  A Jetlink host starts about a minute after the car comes on, usually while still parked, and can drop off as the
+  car stops at the end; the device's own model drives meanwhile. That time was counted as a fallback, so a drive on
+  the big model the whole time the car moved read like "Cinque Terre V3 Model (big) 88%, then WMI V12". Now only time
+  **moving** on the device's own model counts, and that drive reads "Cinque Terre V3 Model (big)". A real fallback
+  while driving (Jetlink or Chestnut) still shows its %. The wording is also "…88%, the rest WMI V12": "then" wasn't
+  right when the device's model drove first.
 
 ## 2026-11-18
 
