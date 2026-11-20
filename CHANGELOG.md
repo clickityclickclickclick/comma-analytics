@@ -3,6 +3,19 @@
 What changed in each update, newest first. To update, run
 `git pull && docker compose up -d --build`.
 
+## 2026-11-20
+
+**After updating:** nothing to run. Drives read before the update keep the old count (see below); to redo one, re-import
+it (`docker compose run --rm sync python sync.py --reload <route>`, or `--reload all` as under 2026-11-08).
+
+### Fixed
+
+- The drive list's **Model** column no longer says a drive fell back to the device's own model just because that model
+  drove while the car was **stopped**. A Jetlink host takes about a minute to start after the car turns on, and can drop
+  off as the car stops at the end, so a Jetlink drive read "Cinque Terre V3 Model (big) 88%, then WMI V12" though the
+  big model drove the whole time the car moved. Now only time **moving** on the device's own model counts. The wording
+  is also "…88%, the rest WMI V12": the "then" wasn't right when the device's model drove first.
+
 ## 2026-11-18
 
 **After updating:** nothing to run. Drives skipped before are looked at once more by themselves.

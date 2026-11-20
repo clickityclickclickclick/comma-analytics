@@ -35,6 +35,9 @@ OP_ALERTS = {
 # drivingModelData says it is big, loading while the big model starts up
 MODEL_CODES = {"small": 0, "loading": 1, "big": 2}
 CHESTNUT_STALE_NS = 3e9  # chestnutState is 1 Hz in qlogs
+# the device's own model counts as a fallback only while moving: parked, it is a big model starting up (a Jetlink
+# host takes about a minute) or a Jetlink host dropping off as the car stops
+MODEL_MOVING = 1.0  # m/s
 
 # visibility: lane-line confidence only means something while moving
 VISION_MOVING = 5.0  # m/s
@@ -189,7 +192,7 @@ def extract_segment(path, tags: dict, fallback_start_ns: int | None,
     chestnut_t = None
   big_loading = False
   loading_until = 0  # the Chestnut's first report comes a moment after the loading alert clears
-  model_secs = {"small": 0.0, "big": 0.0}
+  model_secs = {"small": 0.0, "big": 0.0, "small_moving": 0.0}
   # big-model loads: [loading alert start (None if it began in an earlier segment), end]; and when bigModelFailed fired
   loads: list[list] = []
   load_start = None
@@ -375,6 +378,8 @@ def extract_segment(path, tags: dict, fallback_start_ns: int | None,
                "loading" if big_loading or t < loading_until else "small")
       if model != "loading":
         model_secs[model] += dt
+      if model == "small" and cur["v"] > MODEL_MOVING:
+        model_secs["small_moving"] += dt
       s = summary.setdefault(mode, [0.0, 0.0])
       s[0] += dt
       s[1] += cur["v"] * dt
@@ -447,7 +452,7 @@ def extract_segment(path, tags: dict, fallback_start_ns: int | None,
                   .field("max_level", dm_sum["max_level"]))
   if model_summary and any(model_secs.values()):
     points.append(pt("model_summary", seg_start).field("small_s", round(model_secs["small"], 2))
-                  .field("big_s", round(model_secs["big"], 2)))
+                  .field("big_s", round(model_secs["big"], 2)).field("small_moving_s", round(model_secs["small_moving"], 2)))
   return points, summary, info
 
 

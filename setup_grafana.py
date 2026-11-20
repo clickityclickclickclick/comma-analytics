@@ -799,14 +799,21 @@ def build_dashboard() -> dict:
                   '      from_ms: uint(v: r._time) / uint(v: 1000000) - uint(v: 60000),\n'
                   '      to_ms: uint(v: r._time) / uint(v: 1000000) + uint(v: r.duration_min * 60000.0) + uint(v: 60000)}))\n'
                   '  |> sort(columns: ["start"], desc: true)', "A"),
-           # driving model: names from the route, time on each from model_summary (strings, so the two can be unioned)
-           target('secs = ' + src("model_summary", ' and (r._field == "big_s" or r._field == "small_s")').lstrip() + DRIVER_FILTER +
-                  '  |> group(columns: ["route", "_field"])\n  |> sum()\n'
-                  '  |> map(fn: (r) => ({route: r.route, _field: r._field, _value: string(v: r._value)}))\n'
+           # driving model: names from the route, time on each from model_summary (strings, so the two can be unioned).
+           # The device's own model counts only while moving (small_moving_s); a drive read before that field existed
+           # has only small_s, which also counts the time parked while a big model starts up.
+           target('secs = ' + src("model_summary", ' and (r._field == "big_s" or r._field == "small_s" or r._field == "small_moving_s")').lstrip() + DRIVER_FILTER +
+                  '  |> pivot(rowKey: ["_time"], columnKey: ["_field"], valueColumn: "_value")\n'
+                  '  |> map(fn: (r) => ({route: r.route, big_s: if exists r.big_s then float(v: r.big_s) else 0.0,\n'
+                  '      small_s: if exists r.small_moving_s then float(v: r.small_moving_s) else if exists r.small_s then float(v: r.small_s) else 0.0}))\n'
+                  '  |> group(columns: ["route"])\n'
+                  '  |> reduce(identity: {big: 0.0, small: 0.0}, fn: (r, accumulator) => ({big: accumulator.big + r.big_s, small: accumulator.small + r.small_s}))\n'
+                  'secs_big = secs |> map(fn: (r) => ({route: r.route, _field: "big_s", _value: string(v: r.big)}))\n'
+                  'secs_small = secs |> map(fn: (r) => ({route: r.route, _field: "small_s", _value: string(v: r.small)}))\n'
                   'names = ' + src("route", ' and (r._field == "model_small" or r._field == "model_big")').lstrip() + DRIVER_FILTER +
                   '  |> group(columns: ["route", "_field"])\n  |> last()\n'
                   '  |> map(fn: (r) => ({route: r.route, _field: r._field, _value: r._value}))\n'
-                  'union(tables: [secs, names])\n  |> group()\n'
+                  'union(tables: [secs_big, secs_small, names])\n  |> group()\n'
                   '  |> pivot(rowKey: ["route"], columnKey: ["_field"], valueColumn: "_value")\n'
                   '  |> map(fn: (r) => {\n'
                   '      big = if exists r.big_s then float(v: r.big_s) else 0.0\n'
@@ -814,7 +821,7 @@ def build_dashboard() -> dict:
                   '      bn = if exists r.model_big and r.model_big != "" then r.model_big else "big model"\n'
                   '      sn = if exists r.model_small and r.model_small != "" then r.model_small else "–"\n'
                   '      return {route: r.route, model: if big < 1.0 then sn else if small < 5.0 then bn + " (big)"\n'
-                  '              else bn + " (big) " + string(v: int(v: 100.0 * big / (big + small))) + "%, then " + sn}\n'
+                  '              else bn + " (big) " + string(v: int(v: 100.0 * big / (big + small))) + "%, the rest " + sn}\n'
                   '  })', "B")],
           transformations=[{"id": "merge", "options": {}},
                            {"id": "organize", "options": {"excludeByName": {"from_ms": True, "to_ms": True},
@@ -826,7 +833,7 @@ def build_dashboard() -> dict:
                          START_COLUMN, ROUTE_LINK,
                          {"matcher": {"id": "byName", "options": "model"},
                           "properties": [{"id": "displayName", "value": "Model"}, {"id": "noValue", "value": "–"},
-                                         {"id": "description", "value": "Driving model. (big) = the big model on a Chestnut or Jetlink host; a % means it fell back to the device's own model partway"}]},
+                                         {"id": "description", "value": "Driving model. (big) = the big model on a Chestnut or Jetlink host; a % means the device's own model drove the rest of the time while moving (time stopped, such as while the big model starts up, doesn't count)"}]},
                          {"matcher": {"id": "byName", "options": "version"}, "properties": [{"id": "displayName", "value": "Version"}]},
                          {"matcher": {"id": "byName", "options": "branch"}, "properties": [{"id": "displayName", "value": "Branch"}]},
                          {"matcher": {"id": "byName", "options": "commit"}, "properties": [{"id": "displayName", "value": "Commit"}]},
