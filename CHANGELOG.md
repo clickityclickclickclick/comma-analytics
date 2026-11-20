@@ -15,7 +15,7 @@ docker compose run --rm sync python sync.py --reload <route>
 docker compose start sync
 ```
 
-`<route>` is the drive's id from the drive list (for example `0000018c`); `--reload all` recounts every drive (see
+`<route>` is the drive's id from the drive list (for example `00000123`); `--reload all` recounts every drive (see
 2026-11-08 for how long that takes). The quick logs come back at once; the full logs (rlogs), where a Jetlink drive's
 big model is recorded, are re-read in the background within a few minutes. Until then that drive shows the device's
 model. After it, check `docker compose ps`: if the sync was started again during the re-import, stop it and run the
