@@ -3,6 +3,34 @@
 What changed in each update, newest first. To update, run
 `git pull && docker compose up -d --build`.
 
+## 2026-11-20
+
+**After updating:** nothing to run. Only drives with a big model (Chestnut or Jetlink) are affected. Drives read
+before the update keep the old count, so an older Jetlink drive can still say it fell back to the device's model. To
+recount one, re-import it:
+
+```sh
+docker compose stop sync
+docker compose run --rm sync python sync.py --reload <route>
+docker compose start sync
+```
+
+`<route>` is the drive's id from the drive list (for example `00000123`); `--reload all` recounts every drive (see
+2026-11-08 for how long that takes). The quick logs come back at once; the full logs (rlogs), where a Jetlink drive's
+big model is recorded, are re-read in the background within a few minutes. Until then that drive shows the device's
+model. After it, check `docker compose ps`: if the sync was started again during the re-import, stop it and run the
+re-import once more, or its full logs may not be re-read.
+
+### Fixed
+
+- **Jetlink:** the drive list's **Model** column no longer says a Jetlink drive fell back to the device's own model.
+  A Jetlink host starts about a minute after the car comes on, usually while still parked, and can drop off as the
+  car stops at the end; the device's own model drives meanwhile. That time was counted as a fallback, so a drive on
+  the big model the whole time the car moved read like "Cinque Terre V3 Model (big) 88%, then WMI V12". Now only time
+  **moving** on the device's own model counts, and that drive reads "Cinque Terre V3 Model (big)". A real fallback
+  while driving (Jetlink or Chestnut) still shows its %. The wording is also "…88%, the rest WMI V12": "then" wasn't
+  right when the device's model drove first.
+
 ## 2026-11-18
 
 **After updating:** nothing to run. Drives skipped before are looked at once more by themselves.
@@ -27,6 +55,13 @@ What changed in each update, newest first. To update, run
   come in from comma's servers. Before, the hourly download from comma's servers stopped until Home Assistant was
   back. Drives that come in meanwhile are labelled with the last driver Home Assistant reported before it went
   away. Without Home Assistant, nothing changes.
+- **Rivian, drives copied off the device:** when a minute's quick log (qlog) was read after its full log (rlog),
+  for example a quick log that couldn't be read the first time and came in again later, that minute's engagements
+  were stored twice, and the quick log's "cruise turned off" guesses and "engagement didn't stick" errors came back
+  next to the full log's real causes. Now the quick log leaves that minute's engagements to the full log.
+- A **collision alert** (FCW / AEB) whose warnings ran from one minute's log into the next was counted twice, with
+  two close-ups. Now it counts once, and its strongest warning includes the part in the next minute. If the earlier
+  minute's log comes in after the later one, the second copy is removed when it does.
 - The **first download from comma's servers** after a start looks back 30 days (`FIRST_DAYS`). If that first try
   failed (no internet for a moment, comma's servers down), the retries looked back only 4 days, so older drives
   still on comma's servers were never downloaded. Now the retries keep looking back 30 days until one gets through.

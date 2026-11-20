@@ -157,26 +157,54 @@ def render(anchor: int, kind: str, msgs, offset: int, tags: dict, source: str) -
   return [s] + points
 
 
-def extract_alerts(seg: int, qlog_for, best_for, tags: dict, fallback_start_ns) -> tuple[list[Point], list[tuple[int, int]]]:
-  """Points for the alerts that start in segment `seg`, and each one's close-up span (wall ns) for clearing old points.
+def _trigger_msgs(path) -> list:
+  """The messages with a trigger in a neighbouring segment's qlog (none if it isn't here)."""
+  return [] if path is None else [m for m in read_events(path) if _triggers(m)]
+
+
+def extract_alerts(seg: int, qlog_for, best_for, tags: dict, fallback_start_ns) \
+    -> tuple[list[Point], list[tuple[int, int]], tuple[int, int] | None]:
+  """Points for the alerts that start in segment `seg`, each one's close-up span (wall ns) for clearing old points,
+  and the segment's own span (wall ns), for clearing alert points written for it before; None if it can't be placed.
+
+  An alert whose triggers run on from the segment before belongs to that one, and triggers running on into the
+  segment after count toward its strongest kind: each segment is one file, the alert isn't.
 
   qlog_for(seg) / best_for(seg) -> the segment's qlog / best log (rlog if copied, else qlog), or None."""
   q = qlog_for(seg)
   if q is None:
-    return [], []
+    return [], [], None
   qmsgs = list(read_events(q))
   if not qmsgs:
-    return [], []
-  alerts = find_alerts(qmsgs)
-  if not alerts:
-    return [], []
+    return [], [], None
   offset = clock_offset(qmsgs, fallback_start_ns)
   if offset is None:
-    return [], []
+    return [], [], None
   # the segment's own span, to tell whether a close-up reaches into the one before / after
   seg_t0 = next((m.logMonoTime for m in qmsgs if m.which() != "initData"), qmsgs[0].logMonoTime)
   seg_t1 = qmsgs[-1].logMonoTime
-  points, spans = [], []
+  seg_span = (seg_t0 + offset, seg_t1 + offset)
+  alerts = find_alerts(qmsgs)
+  stale = []  # close-up of a copy written before for an alert that turns out to be the previous segment's
+  if alerts:
+    triggers = [m.logMonoTime for m in qmsgs if _triggers(m)]
+    # only read a neighbour when an alert touches that edge (its triggers may run on across it)
+    before = _trigger_msgs(qlog_for(seg - 1)) if seg > 0 and triggers[0] - seg_t0 <= NEW_ALERT_NS else []
+    after = _trigger_msgs(qlog_for(seg + 1)) if seg_t1 - triggers[-1] <= NEW_ALERT_NS else []
+    before = [m for m in before if m.logMonoTime < seg_t0]
+    after = [m for m in after if m.logMonoTime > seg_t1]
+    if before or after:
+      joined = find_alerts(before + qmsgs + after)
+      if alerts[0][0] not in {t for t, _ in joined}:  # this segment's first alert is the previous one's carrying on
+        # the previous segment rewrites the close-up up to its own stop; what a copy written before had past that goes
+        own = max(t for t, _ in joined if t < seg_t0)
+        own_stop, copy_stop = own + int((AFTER_S + 1) * 1e9), alerts[0][0] + int((AFTER_S + 1) * 1e9)
+        if copy_stop > own_stop:
+          stale.append((own_stop + 1 + offset, copy_stop + offset))
+      alerts = [a for a in joined if seg_t0 <= a[0] <= seg_t1]
+  if not alerts:
+    return [], stale, seg_span
+  points, spans = [], list(stale)
   for anchor, kind in alerts:
     start, stop = anchor - int((BEFORE_S + 2) * 1e9), anchor + int((AFTER_S + 1) * 1e9)
     paths = [best_for(s) for s, needed in ((seg - 1, start < seg_t0), (seg, True), (seg + 1, stop > seg_t1)) if needed]
@@ -184,4 +212,4 @@ def extract_alerts(seg: int, qlog_for, best_for, tags: dict, fallback_start_ns) 
     msgs = _window([p for p in paths if p is not None], start, stop)
     points += render(anchor, kind, msgs, offset, tags, "rlog" if sources == {True} else "qlog")
     spans.append((start + offset, stop + offset))
-  return points, spans
+  return points, spans, seg_span

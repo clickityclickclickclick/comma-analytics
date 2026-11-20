@@ -35,6 +35,9 @@ OP_ALERTS = {
 # drivingModelData says it is big, loading while the big model starts up
 MODEL_CODES = {"small": 0, "loading": 1, "big": 2}
 CHESTNUT_STALE_NS = 3e9  # chestnutState is 1 Hz in qlogs
+# the device's own model counts as a fallback only while moving: parked, it is a big model starting up (a Jetlink
+# host takes about a minute) or a Jetlink host dropping off as the car stops
+MODEL_MOVING = 1.0  # m/s
 
 # visibility: lane-line confidence only means something while moving
 VISION_MOVING = 5.0  # m/s
@@ -118,8 +121,9 @@ def read_events(path):
 
 
 def extract_segment(path, tags: dict, fallback_start_ns: int | None,
-                    model_summary: bool = True) -> tuple[list[Point], dict, dict]:
-  """`model_summary`: False once this segment's rlog has given its model time, which is better than the qlog's."""
+                    model_summary: bool = True, engagements: bool = True) -> tuple[list[Point], dict, dict]:
+  """`model_summary`: False once this segment's rlog has given its model time, which is better than the qlog's.
+  `engagements`: False once its rlog has given the engagements (with how each ended), which replace the qlog's guesses."""
   msgs = list(read_events(path))
   if not msgs:
     return [], {}, {}
@@ -188,7 +192,7 @@ def extract_segment(path, tags: dict, fallback_start_ns: int | None,
     chestnut_t = None
   big_loading = False
   loading_until = 0  # the Chestnut's first report comes a moment after the loading alert clears
-  model_secs = {"small": 0.0, "big": 0.0}
+  model_secs = {"small": 0.0, "big": 0.0, "small_moving": 0.0}
   # big-model loads: [loading alert start (None if it began in an earlier segment), end]; and when bigModelFailed fired
   loads: list[list] = []
   load_start = None
@@ -198,7 +202,9 @@ def extract_segment(path, tags: dict, fallback_start_ns: int | None,
   first_op = first_model = first_chestnut = None
   first_engageable = None  # first moment openpilot could be engaged (any segment: it can wait on the car)
   startup_end = msgs[0].logMonoTime + STARTUP_S * 1e9 if info else 0  # initData's time = when this boot started logging
-  engagements = EngagementTracker(lambda meas, t: pt(meas, t), faults, "qlog")
+  write_engagements = engagements
+  # without them, the engage_dropped faults they raise go to a tracker that's thrown away
+  engagements = EngagementTracker(lambda meas, t: pt(meas, t), faults if write_engagements else FaultTracker(tags, offset), "qlog")
 
   def qlog_cause(t: int) -> str:
     return alert_cause(disables, t) or ("brake" if cur["brake"] else UNKNOWN_CAUSE)
@@ -372,6 +378,8 @@ def extract_segment(path, tags: dict, fallback_start_ns: int | None,
                "loading" if big_loading or t < loading_until else "small")
       if model != "loading":
         model_secs[model] += dt
+      if model == "small" and cur["v"] > MODEL_MOVING:
+        model_secs["small_moving"] += dt
       s = summary.setdefault(mode, [0.0, 0.0])
       s[0] += dt
       s[1] += cur["v"] * dt
@@ -428,7 +436,8 @@ def extract_segment(path, tags: dict, fallback_start_ns: int | None,
   # the first engageable moment in this segment, from the drive's start; the dashboard takes the drive's earliest
   if boot_t0 is not None and first_engageable is not None:
     points.append(pt("engage_ready", first_engageable).field("since_start_s", round((first_engageable - boot_t0) / 1e9, 2)))
-  points += engagements.points
+  if write_engagements:
+    points += engagements.points
   if steer_sum["n"]:
     points.append(pt("steering_summary", seg_start).field("err_sq_sum", round(steer_sum["err_sq_sum"], 4))
                   .field("n", steer_sum["n"]).field("sat_n", steer_sum["sat_n"]))
@@ -443,7 +452,7 @@ def extract_segment(path, tags: dict, fallback_start_ns: int | None,
                   .field("max_level", dm_sum["max_level"]))
   if model_summary and any(model_secs.values()):
     points.append(pt("model_summary", seg_start).field("small_s", round(model_secs["small"], 2))
-                  .field("big_s", round(model_secs["big"], 2)))
+                  .field("big_s", round(model_secs["big"], 2)).field("small_moving_s", round(model_secs["small_moving"], 2)))
   return points, summary, info
 
 

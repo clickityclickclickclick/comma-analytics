@@ -10,7 +10,7 @@ import cantools
 from influxdb_client import Point, WritePrecision
 
 from .config import ROOT
-from .extract import FORWARD_GEARS, MODEL_CODES, LanePosition, read_events
+from .extract import FORWARD_GEARS, MODEL_CODES, MODEL_MOVING, LanePosition, read_events
 from .engage import EngagementTracker, alert_cause
 from .faults import FaultTracker
 
@@ -83,7 +83,7 @@ def extract_rlog(path, tags: dict, fallback_start_ns: int | None, brand: str | N
   eac_fault = False
   lat_active, in_drive, act_toi = False, False, False
   model_points: list[tuple[int, int]] = []  # (t, model code) at each change and every MODEL_EVERY_NS
-  model_secs = {"small": 0.0, "big": 0.0}
+  model_secs = {"small": 0.0, "big": 0.0, "small_moving": 0.0}
   prev_model: tuple[int, int] | None = None
   first = None
   last = None
@@ -123,6 +123,8 @@ def extract_rlog(path, tags: dict, fallback_start_ns: int | None, brand: str | N
       if g.hasFix and g.unixTimestampMillis > 0:
         offset = g.unixTimestampMillis * 1_000_000 - t
     elif not rivian and w != "modelV2":
+      if w == "carState":
+        v_ego = m.carState.vEgo  # the speed, for the model's time while moving
       continue  # another car: only the model is read
     elif w == "carState":
       v_ego = m.carState.vEgo
@@ -150,7 +152,10 @@ def extract_rlog(path, tags: dict, fallback_start_ns: int | None, brand: str | N
     elif w == "modelV2":
       code = MODEL_CODES["big" if m.modelV2.big else "small"]
       if prev_model is not None and code == prev_model[1]:
-        model_secs["big" if code == MODEL_CODES["big"] else "small"] += min((t - prev_model[0]) / 1e9, 1.0)
+        dt = min((t - prev_model[0]) / 1e9, 1.0)
+        model_secs["big" if code == MODEL_CODES["big"] else "small"] += dt
+        if code != MODEL_CODES["big"] and v_ego > MODEL_MOVING:
+          model_secs["small_moving"] += dt
       if prev_model is None or code != prev_model[1] or t - model_points[-1][0] >= MODEL_EVERY_NS:
         model_points.append((t, code))
       prev_model = (t, code)
@@ -208,7 +213,8 @@ def extract_rlog(path, tags: dict, fallback_start_ns: int | None, brand: str | N
       p = Point("model_summary").time(first + offset, WritePrecision.NS)
       for k, val in tags.items():
         p = p.tag(k, val)
-      points.append(p.field("small_s", round(model_secs["small"], 2)).field("big_s", round(model_secs["big"], 2)))
+      points.append(p.field("small_s", round(model_secs["small"], 2)).field("big_s", round(model_secs["big"], 2))
+                    .field("small_moving_s", round(model_secs["small_moving"], 2)))
     return points, {"has_model": bool(model_points), "model_only": True,
                     "span": (first + offset, last + offset) if first is not None else None}
 
@@ -246,7 +252,8 @@ def extract_rlog(path, tags: dict, fallback_start_ns: int | None, brand: str | N
     p = Point("model_summary").time(first + offset, WritePrecision.NS)
     for k, val in tags.items():
       p = p.tag(k, val)
-    p = p.field("small_s", round(model_secs["small"], 2)).field("big_s", round(model_secs["big"], 2))
+    p = (p.field("small_s", round(model_secs["small"], 2)).field("big_s", round(model_secs["big"], 2))
+         .field("small_moving_s", round(model_secs["small_moving"], 2)))
     points.append(p)
   faults = FaultTracker(tags, offset)
   run: list[int] = []  # frame times of the current unbroken stretch of the rack ignoring our torque request
