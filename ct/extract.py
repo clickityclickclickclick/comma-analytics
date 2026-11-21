@@ -190,6 +190,7 @@ def extract_segment(path, tags: dict, fallback_start_ns: int | None,
     chestnut_t = seg_t0
   else:
     chestnut_t = None
+  chestnut_seen = False  # a live Chestnut anywhere in the segment: the big model ran on it, not on a Jetlink host
   big_loading = False
   loading_until = 0  # the Chestnut's first report comes a moment after the loading alert clears
   model_secs = {"small": 0.0, "big": 0.0, "small_moving": 0.0}
@@ -332,6 +333,7 @@ def extract_segment(path, tags: dict, fallback_start_ns: int | None,
       if m.chestnutState.tempC > 0:
         chestnut_t = t
         first_chestnut = first_chestnut or t
+        chestnut_seen = True
     elif w == "gpsLocationExternal":
       g = m.gpsLocationExternal
       if g.hasFix:
@@ -450,6 +452,8 @@ def extract_segment(path, tags: dict, fallback_start_ns: int | None,
     points.append(pt("dm_summary", seg_start).field("steered_s", round(dm_sum["steered_s"], 2))
                   .field("distracted_s", round(dm_sum["distracted_s"], 2)).field("warnings", dm_sum["warnings"])
                   .field("max_level", dm_sum["max_level"]))
+  if info:
+    info["chestnut"] = chestnut_seen  # the route ORs its segments' (sync.ingest_route)
   if model_summary and any(model_secs.values()):
     points.append(pt("model_summary", seg_start).field("small_s", round(model_secs["small"], 2))
                   .field("big_s", round(model_secs["big"], 2)).field("small_moving_s", round(model_secs["small_moving"], 2)))

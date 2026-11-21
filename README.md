@@ -42,11 +42,12 @@ Home Assistant names them: see *driver names* under Setup):
   Names come from the models picked in the device's model settings when the drive starts. With none picked the
   device runs the models built into the software and the dashboard shows only "device model" or "big model". Pick
   both models in the model settings, and pick them again after a software update, which can clear them.
-  In the drive list, "(big)" means the big model drove; a % after it means the device's own model drove the rest of
+  In the drive list, "(Chestnut)" or "(Jetlink)" means the big model drove, and where it ran ("(big)" on a drive
+  read before 2026-11-21 until `sync.py --chestnut` is run); a % after it means the device's own model drove the rest of
   the time **while moving**. Time stopped doesn't count, so a Jetlink host starting up (about a minute after the car
   comes on, usually while parked) or dropping off as the car stops at the end isn't shown as a fallback.
 - **Time to ready:** from the car coming on to openpilot running and then to the first driving-model output,
-  coloured by which model came up (the big model on a Chestnut or Jetlink host, or the device's own).
+  coloured by which model came up (the big model, labelled Chestnut or Jetlink, or the device's own).
 - **Engagements:** every disengagement with what ended it (brake, stalk cancel, the car dropping ACC, an openpilot
   cancel or alert), and engagements that didn't stick (under 3 s, not ended by you) flagged as errors. The exact
   cause needs the full logs copied off the device (Rivian CAN); cloud-only drives show "cruise turned off". Once a

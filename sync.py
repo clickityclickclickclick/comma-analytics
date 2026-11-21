@@ -8,6 +8,7 @@
   ./sync.py --device --route 00000092   # pull one drive now (DEVICE_IP from .env or env)
   ./sync.py --reload ROUTE  # delete and re-ingest one route (e.g. after changing extract.py)
   ./sync.py --reload all    # re-ingest everything in the archive
+  ./sync.py --chestnut      # drives read before 2026-11-21: note which ran the big model on a Chestnut (quick, no re-read)
 """
 import argparse
 import base64
@@ -21,7 +22,7 @@ from influxdb_client.client.write_api import SYNCHRONOUS
 
 from ct.config import ARCHIVE, ENV, load_state, save_state, secret
 from ct import device
-from ct.extract import extract_segment
+from ct.extract import extract_segment, read_events
 from ct.faults import FAULTS, FaultTracker
 from ct.rlog import BRANDS, extract_rlog
 from ct.safety import extract_alerts
@@ -193,6 +194,8 @@ def ingest_route(client, write, route: dict, segs: list[int], done: set[int], ch
     except Exception as e:  # truncated/corrupt qlog (e.g. upload cut off): skip it, retried next pass
       log(f"{route['fullname']} seg {seg}: unreadable qlog, skipped ({str(e).splitlines()[0]})")
       continue
+    if seg_info:  # a Chestnut seen in any segment counts for the drive
+      seg_info["chestnut"] = bool(seg_info.get("chestnut") or info.get("chestnut"))
     if seg_info and any(info.get(k) != v for k, v in seg_info.items()):
       info = {**info, **seg_info}
       info_file.write_text(json.dumps(info, indent=1))
@@ -217,6 +220,8 @@ def ingest_route(client, write, route: dict, segs: list[int], done: set[int], ch
           .field("commit_date", info.get("commit_date", "")).field("device", info.get("device", ""))
           .field("fork", fork_name(info.get("remote") or route.get("git_remote") or ""))
           .field("model_small", info.get("model_small", "")).field("model_big", info.get("model_big", "")))
+  if "chestnut" in info:  # which host ran the big model: a Chestnut, else (big model but no Chestnut) a Jetlink host
+    meta = meta.field("chestnut", int(info["chestnut"]))
   for k, v in tags.items():
     meta = meta.tag(k, v)
   # software versions as tags so the dashboard can group by them
@@ -224,6 +229,32 @@ def ingest_route(client, write, route: dict, segs: list[int], done: set[int], ch
           .tag("commit", info.get("commit") or (route.get("git_commit") or "?")[:7]))
   write.write(ENV["INFLUX_BUCKET"], ENV["INFLUX_ORG"], meta)
   return n
+
+
+def mark_chestnut(write, changes) -> None:
+  """Drives read before the route's chestnut field existed: look for a live Chestnut in their quick logs and rewrite
+  the route point, so the dashboard can say whether the big model ran on a Chestnut or a Jetlink host. Touches
+  nothing else (no delete, no re-read of the drive's data)."""
+  for p in sorted(ARCHIVE.glob("*/route.json")):
+    r = json.loads(p.read_text())
+    d = route_dir(r["fullname"])
+    info_file = d / "software.json"
+    info = json.loads(info_file.read_text()) if info_file.exists() else {}
+    if "chestnut" in info:
+      continue
+    segs = sorted(int(q.name.split(".")[0]) for q in d.glob("*.qlog.zst"))
+    seen = False
+    for seg in segs:
+      try:
+        seen = any(m.which() == "chestnutState" and m.chestnutState.tempC > 0 for m in read_events(d / f"{seg}.qlog.zst"))
+      except Exception:
+        continue  # unreadable qlog: the others decide
+      if seen:
+        break
+    info["chestnut"] = seen
+    info_file.write_text(json.dumps(info, indent=1))
+    ingest_route(None, write, r, segs, set(segs), changes)  # every segment done: rewrites just the route point
+    log(f"{r['fullname']}: {'Chestnut' if seen else 'no Chestnut'}")
 
 
 def token_expiry(token: str) -> int:
@@ -438,6 +469,7 @@ def main() -> int:
   ap.add_argument("--route", help="with --device: only this drive (route id or prefix, e.g. 00000092)")
   ap.add_argument("--daemon", action="store_true")
   ap.add_argument("--rlogs", action="store_true", help="ingest braking + EPS fault data from all rlogs copied off the device")
+  ap.add_argument("--chestnut", action="store_true", help="note which older drives ran the big model on a Chestnut")
   args = ap.parse_args()
 
   state = load_state()
@@ -478,6 +510,10 @@ def main() -> int:
 
     changes = drivers(write)
     log(f"driver history: {len(changes)} profile changes")
+
+    if args.chestnut:
+      mark_chestnut(write, changes)
+      return 0
 
     if args.reload:
       routes = [json.loads(p.read_text()) for p in sorted(ARCHIVE.glob("*/route.json"))]

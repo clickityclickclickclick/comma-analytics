@@ -155,6 +155,9 @@ FOLLOW_JS = """(function () {
     sub = s && s.subscribeToEvent({ type: 'data-hover' }, follow);
   }, 1000);
 })()""" % EVENT_LOG
+# where a drive's big model ran, from the route's chestnut field (a live Chestnut seen in its quick logs; a big model
+# without one ran on a Jetlink host). Drives read before the field existed say just "big". Lines of a Flux function body
+BIG_HOST = '      host = if exists r.chestnut then (if {chestnut} then "Chestnut" else "Jetlink") else "big"\n'
 DRIVER_FILTER = ('  |> filter(fn: (r) => contains(value: r.driver, set: ${driver:json}))\n'
                  # the drives that ran the models picked at the top (model_routes)
                  '  |> filter(fn: (r) => contains(value: r.route, set: ${model_routes:json}))\n')
@@ -810,18 +813,19 @@ def build_dashboard() -> dict:
                   '  |> reduce(identity: {big: 0.0, small: 0.0}, fn: (r, accumulator) => ({big: accumulator.big + r.big_s, small: accumulator.small + r.small_s}))\n'
                   'secs_big = secs |> map(fn: (r) => ({route: r.route, _field: "big_s", _value: string(v: r.big)}))\n'
                   'secs_small = secs |> map(fn: (r) => ({route: r.route, _field: "small_s", _value: string(v: r.small)}))\n'
-                  'names = ' + src("route", ' and (r._field == "model_small" or r._field == "model_big")').lstrip() + DRIVER_FILTER +
+                  'names = ' + src("route", ' and (r._field == "model_small" or r._field == "model_big" or r._field == "chestnut")').lstrip() + DRIVER_FILTER +
                   '  |> group(columns: ["route", "_field"])\n  |> last()\n'
-                  '  |> map(fn: (r) => ({route: r.route, _field: r._field, _value: r._value}))\n'
+                  '  |> map(fn: (r) => ({route: r.route, _field: r._field, _value: string(v: r._value)}))\n'
                   'union(tables: [secs_big, secs_small, names])\n  |> group()\n'
                   '  |> pivot(rowKey: ["route"], columnKey: ["_field"], valueColumn: "_value")\n'
                   '  |> map(fn: (r) => {\n'
                   '      big = if exists r.big_s then float(v: r.big_s) else 0.0\n'
                   '      small = if exists r.small_s then float(v: r.small_s) else 0.0\n'
+                  + BIG_HOST.format(chestnut='r.chestnut == "1"') +
                   '      bn = if exists r.model_big and r.model_big != "" then r.model_big else "big model"\n'
                   '      sn = if exists r.model_small and r.model_small != "" then r.model_small else "–"\n'
-                  '      return {route: r.route, model: if big < 1.0 then sn else if small < 5.0 then bn + " (big)"\n'
-                  '              else bn + " (big) " + string(v: int(v: 100.0 * big / (big + small))) + "%, the rest " + sn}\n'
+                  '      return {route: r.route, model: if big < 1.0 then sn else if small < 5.0 then bn + " (" + host + ")"\n'
+                  '              else bn + " (" + host + ") " + string(v: int(v: 100.0 * big / (big + small))) + "%, the rest " + sn}\n'
                   '  })', "B")],
           transformations=[{"id": "merge", "options": {}},
                            {"id": "organize", "options": {"excludeByName": {"from_ms": True, "to_ms": True},
@@ -833,7 +837,7 @@ def build_dashboard() -> dict:
                          START_COLUMN, ROUTE_LINK,
                          {"matcher": {"id": "byName", "options": "model"},
                           "properties": [{"id": "displayName", "value": "Model"}, {"id": "noValue", "value": "–"},
-                                         {"id": "description", "value": "Driving model. (big) = the big model on a Chestnut or Jetlink host; a % means the device's own model drove the rest of the time while moving (time stopped, such as while the big model starts up, doesn't count)"}]},
+                                         {"id": "description", "value": "Driving model. (Chestnut) / (Jetlink) = the big model, and where it ran ((big) on a drive read before that was recorded); a % means the device's own model drove the rest of the time while moving (time stopped, such as while the big model starts up, doesn't count)"}]},
                          {"matcher": {"id": "byName", "options": "version"}, "properties": [{"id": "displayName", "value": "Version"}]},
                          {"matcher": {"id": "byName", "options": "branch"}, "properties": [{"id": "displayName", "value": "Branch"}]},
                          {"matcher": {"id": "byName", "options": "commit"}, "properties": [{"id": "displayName", "value": "Commit"}]},
@@ -874,6 +878,10 @@ def build_dashboard() -> dict:
           [target('engage = ' + src("engage_ready", ' and r.route == "${route}" and r._field == "since_start_s"')
                   .replace("start: v.timeRangeStart, stop: v.timeRangeStop", "start: -10y").lstrip() +
                   '  |> group()\n  |> min()\n  |> findRecord(fn: (key) => true, idx: 0)\n' +
+                  'rt = ' + src("route", ' and r.route == "${route}" and r._field == "chestnut"')
+                  .replace("start: v.timeRangeStart, stop: v.timeRangeStop", "start: -10y").lstrip() +
+                  '  |> group()\n  |> last()\n  |> findRecord(fn: (key) => true, idx: 0)\n'
+                  'host = if exists rt._value then (if rt._value == 1 then "Chestnut" else "Jetlink") else ""\n' +
                   src("startup", ' and r.route == "${route}" and (r._field == "openpilot_s" or r._field == "model_s" or r._field == "model"'
                               ' or r._field == "model_name" or r._field == "big_failed")')
                   .replace("start: v.timeRangeStart, stop: v.timeRangeStop", "start: -10y") +
@@ -883,14 +891,16 @@ def build_dashboard() -> dict:
                   '      ready = if exists r.model_s then r.model_s else r.openpilot_s\n'
                   '      car = if exists engage._value and engage._value > ready then engage._value - ready else 0.0\n'
                   '      big = exists r.model and r.model == "big"\n'
-                  '      name = if exists r.model_name and r.model_name != "" then r.model_name else if big then "big model" else "device model"\n'
+                  '      name = if not big then (if exists r.model_name and r.model_name != "" then r.model_name else "device model")\n'
+                  '        else (if exists r.model_name and r.model_name != "" then r.model_name else "big model")\n'
+                  '          + (if host != "" then " (" + host + ")" else "")\n'
                   '      return {model: name + (if exists r.big_failed and r.big_failed == 1 then " (big model failed)" else ""),\n'
                   '              openpilot: r.openpilot_s, big: if big then wait else 0.0, device: if big then 0.0 else wait, car: car}\n'
                   '  })')],
           transformations=[{"id": "organize", "options": {"indexByName": {"model": 0, "openpilot": 1, "device": 2, "big": 3, "car": 4}}}],
           description="This drive, from the car coming on (the comma starting to log) until it could engage:\n\n"
                       "- **grey**: openpilot starting up\n"
-                      "- **purple / orange**: waiting for the first driving-model output, from the big model on a Chestnut or Jetlink host (purple) or the "
+                      "- **purple / orange**: waiting for the first driving-model output, from the big model (purple; the bar's label says whether it ran on a Chestnut or a Jetlink host) or the "
                       "device's own (orange, also after a failed big-model load). Nothing drives while the big model loads.\n"
                       "- **yellow**: waiting on the car (in park or reverse, door open, seatbelt off...) until openpilot first said it "
                       "could be engaged",
@@ -900,7 +910,7 @@ def build_dashboard() -> dict:
                          {"matcher": {"id": "byName", "options": "openpilot"},
                           "properties": [{"id": "displayName", "value": "openpilot starting"}, {"id": "color", "value": {"mode": "fixed", "fixedColor": "#8e8e8e"}}]},
                          {"matcher": {"id": "byName", "options": "big"},
-                          "properties": [{"id": "displayName", "value": "big model (Chestnut/Jetlink)"}, {"id": "color", "value": {"mode": "fixed", "fixedColor": "#B877D9"}},
+                          "properties": [{"id": "displayName", "value": "big model"}, {"id": "color", "value": {"mode": "fixed", "fixedColor": "#B877D9"}},
                                          {"id": "noValue", "value": ""}]},
                          {"matcher": {"id": "byName", "options": "device"},
                           "properties": [{"id": "displayName", "value": "device model"}, {"id": "color", "value": {"mode": "fixed", "fixedColor": "#FF9830"}}]},
@@ -955,12 +965,14 @@ def build_dashboard() -> dict:
                   # _field back in the group key, or Grafana gets a plain table instead of a series named "errors"
                   '  |> map(fn: (r) => ({_time: r._time, _value: r._value, _field: "errors"}))\n  |> group(columns: ["_field"])', "D"),
            # which driving model ran, named from the route's model params
-           target('names = ' + src("route", ' and r.route == "${route}" and (r._field == "model_small" or r._field == "model_big")')
+           target('names = ' + src("route", ' and r.route == "${route}" and (r._field == "model_small" or r._field == "model_big" or r._field == "chestnut")')
                   .replace("start: v.timeRangeStart, stop: v.timeRangeStop", "start: -10y").lstrip() +
-                  '  |> last()\n  |> group()\n  |> pivot(rowKey: ["route"], columnKey: ["_field"], valueColumn: "_value")\n'
+                  '  |> last()\n  |> map(fn: (r) => ({r with _value: string(v: r._value)}))\n'
+                  '  |> group()\n  |> pivot(rowKey: ["route"], columnKey: ["_field"], valueColumn: "_value")\n'
                   '  |> findRecord(fn: (key) => true, idx: 0)\n'
                   'small = if exists names.model_small and names.model_small != "" then names.model_small else "device model"\n'
-                  'big = if exists names.model_big and names.model_big != "" then names.model_big else "big model"\n' +
+                  + BIG_HOST.format(chestnut='names.chestnut == "1"').replace("      ", "").replace("exists r.chestnut", "exists names.chestnut") +
+                  'big = (if exists names.model_big and names.model_big != "" then names.model_big else "big model") + " (" + host + ")"\n' +
                   # from the qlog, and from the rlog where it was copied: the rlog's modelV2 knows a Jetlink big model the
                   # qlog can't see. Each window takes the higher of the two, so big from either wins and loading still shows
                   'qlog = ' + src("drive", ' and r.route == "${route}" and r._field == "model_code"').lstrip() +
@@ -971,7 +983,7 @@ def build_dashboard() -> dict:
                   '  |> aggregateWindow(every: v.windowPeriod, fn: last, createEmpty: false)\n'
                   'union(tables: [qlog, rlog])\n  |> group(columns: ["_time"])\n  |> max()\n  |> group()\n  |> sort(columns: ["_time"])\n'
                   '  |> map(fn: (r) => ({_time: r._time, _field: "model",\n'
-                  '      _value: if r._value == 2 then big + " (big)" else if r._value == 1 then "loading big model" else small + " (small)"}))\n'
+                  '      _value: if r._value == 2 then big else if r._value == 1 then "loading big model" else small + " (small)"}))\n'
                   '  |> group(columns: ["_field"])', "E"),
            # lane-line confidence while moving, as a colour strip; windows of at least 5 s so it doesn't flicker, empty
            # windows (stopped, or no data) stay blank
@@ -1043,7 +1055,7 @@ def build_dashboard() -> dict:
                                     + [{"matcher": {"id": "byName", "options": "model"},
                                         "properties": [{"id": "displayName", "value": "model"},
                                                        {"id": "mappings", "value": [
-                                                         {"type": "regex", "options": {"pattern": "^(.+ \\(big\\))$", "result": {"text": "$1", "color": "#8F3BB8"}}},
+                                                         {"type": "regex", "options": {"pattern": "^(.+ \\((big|Chestnut|Jetlink)\\))$", "result": {"text": "$1", "color": "#8F3BB8"}}},
                                                          {"type": "regex", "options": {"pattern": "^(loading.*)$", "result": {"text": "$1", "color": "#F2CC0C"}}},
                                                          {"type": "regex", "options": {"pattern": "^(.+ \\(small\\))$", "result": {"text": "$1", "color": "#5A6E8C"}}}]}]}]
                                     + [{"matcher": {"id": "byName", "options": "events"},
