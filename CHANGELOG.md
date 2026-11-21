@@ -3,6 +3,25 @@
 What changed in each update, newest first. To update, run
 `git pull && docker compose up -d --build`.
 
+## 2026-11-21
+
+**After updating:** to label drives read before the update, run once (takes seconds to a few minutes; nothing is
+deleted or re-read, the sync can keep running):
+
+```sh
+docker compose run --rm sync python sync.py --chestnut
+```
+
+Until then those drives say "(big)" as before.
+
+### Changed
+
+- **Chestnut or Jetlink:** the dashboard now says where the big model ran. The drive list's **Model** column,
+  **Time to ready** and the **Mode timeline** read e.g. "Cinque Terre V3 Model (Chestnut)" or "… (Jetlink)" instead
+  of "(big)", and the Time to ready legend no longer says "big model (Chestnut/Jetlink)", which read as either one.
+  A drive counts as Chestnut when its quick logs show a live Chestnut; a big model without one ran on a Jetlink host.
+  With no big model picked in the device's settings the name is "big model (Chestnut)" and so on.
+
 ## 2026-11-20
 
 **After updating:** nothing to run. Only drives with a big model (Chestnut or Jetlink) are affected. Drives read
